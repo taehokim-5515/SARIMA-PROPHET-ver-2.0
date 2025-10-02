@@ -1,6 +1,6 @@
-prophet==1.1.4
+prophet
 streamlit
 pandas
 numpy
 matplotlib
-plotly
+plotlycmdstanpy
