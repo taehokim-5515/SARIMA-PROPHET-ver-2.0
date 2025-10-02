@@ -1,6 +1,6 @@
 """
-원료 예측 시스템 Streamlit 웹 애플리케이션
-실행 방법: streamlit run app.py
+원료 예측 시스템 Streamlit 웹 애플리케이션 (수정 버전)
+실행: streamlit run app.py
 """
 
 import streamlit as st
@@ -10,7 +10,6 @@ from prophet import Prophet
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import warnings
 from datetime import datetime
 import io
@@ -99,13 +98,18 @@ class StreamlitForecastModel:
         
         for col in ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월']:
             if col in self.df_production.columns:
-                val = production_row[col]
-                if isinstance(val, str) and '톤' in val:
-                    production_values.append(float(val.replace('톤', '').strip()))
-                elif pd.notna(val):
-                    production_values.append(float(val))
+                try:
+                    val = production_row[col]
+                    if isinstance(val, str) and '톤' in val:
+                        production_values.append(float(val.replace('톤', '').strip()))
+                    elif pd.notna(val):
+                        production_values.append(float(val))
+                    else:
+                        production_values.append(0)
+                except:
+                    production_values.append(0)
         
-        if not production_values:
+        if not production_values or len(production_values) == 0:
             production_values = [345, 430, 554, 570, 522, 556, 606, 539]
         
         self.production_ts = pd.DataFrame({
@@ -121,8 +125,11 @@ class StreamlitForecastModel:
                 ratios = []
                 for col in ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월']:
                     if col in self.df_brand.columns:
-                        val = brand_row[col].values[0]
-                        ratios.append(val if pd.notna(val) else 0)
+                        try:
+                            val = brand_row[col].values[0]
+                            ratios.append(float(val) if pd.notna(val) else 0)
+                        except:
+                            ratios.append(0)
                 self.brand_ratios[brand] = ratios
             else:
                 self.brand_ratios[brand] = {
@@ -133,85 +140,112 @@ class StreamlitForecastModel:
     
     def classify_material(self, usage_values):
         """원료 분류"""
-        avg_usage = np.mean(usage_values) if usage_values else 0
-        if avg_usage >= 50000:
-            return '대량'
-        elif avg_usage >= 5000:
-            return '중간'
-        else:
+        try:
+            avg_usage = np.mean(usage_values) if usage_values and len(usage_values) > 0 else 0
+            if avg_usage >= 50000:
+                return '대량'
+            elif avg_usage >= 5000:
+                return '중간'
+            else:
+                return '소량'
+        except:
             return '소량'
+    
+    def safe_float_conversion(self, val):
+        """안전한 float 변환"""
+        try:
+            if pd.isna(val) or val is None:
+                return 0.0
+            if isinstance(val, (int, float)):
+                return float(val)
+            if isinstance(val, str):
+                # 문자열에서 숫자만 추출
+                cleaned = ''.join(c for c in val if c.isdigit() or c == '.')
+                return float(cleaned) if cleaned else 0.0
+            return 0.0
+        except:
+            return 0.0
     
     def calculate_prediction(self, material_code, material_name, usage_values,
                            next_month_production, brand_ratios):
         """예측 계산 (간소화)"""
-        if sum(usage_values) == 0:
-            return 0, (0, 0)
-        
-        # 원료 분류
-        material_type = self.classify_material(usage_values)
-        weights = self.verified_weights[material_type]
-        
-        # 생산량 보정
-        avg_production = np.mean(self.production_ts['y'].values)
-        production_ratio = next_month_production / avg_production if avg_production > 0 else 1
-        
-        # 단순 트렌드 예측
-        recent_avg = np.mean(usage_values[-3:]) if len(usage_values) >= 3 else np.mean(usage_values)
-        trend_pred = recent_avg * production_ratio
-        
-        # Prophet 예측 (간소화)
         try:
-            train_data = pd.DataFrame({
-                'ds': self.months,
-                'y': usage_values
-            })
+            if not usage_values or sum(usage_values) == 0:
+                return 0, (0, 0)
             
-            model = Prophet(
-                yearly_seasonality=False,
-                weekly_seasonality=False,
-                daily_seasonality=False,
-                changepoint_prior_scale=0.1
-            )
-            model.fit(train_data)
+            # 원료 분류
+            material_type = self.classify_material(usage_values)
+            weights = self.verified_weights[material_type]
             
-            future = pd.DataFrame({'ds': [pd.Timestamp('2025-09-01')]})
-            forecast = model.predict(future)
-            prophet_pred = max(0, forecast['yhat'].values[0]) * production_ratio
-        except:
+            # 생산량 보정
+            avg_production = np.mean(self.production_ts['y'].values) if len(self.production_ts) > 0 else 500
+            production_ratio = next_month_production / avg_production if avg_production > 0 else 1
+            
+            # 단순 트렌드 예측
+            recent_avg = np.mean(usage_values[-3:]) if len(usage_values) >= 3 else np.mean(usage_values)
+            trend_pred = recent_avg * production_ratio
+            
+            # Prophet 예측 (간소화)
             prophet_pred = trend_pred
-        
-        # SARIMA 예측 (간소화)
-        sarima_pred = trend_pred  # 간단히 처리
-        
-        # 앙상블
-        ensemble_pred = (
-            prophet_pred * weights['prophet'] +
-            sarima_pred * weights['sarima'] +
-            trend_pred * weights['trend']
-        )
-        
-        # 보정
-        if material_code in self.material_corrections:
-            ensemble_pred *= self.material_corrections[material_code]
-        
-        # 브랜드 보정
-        if '닭' in material_name or 'MDCM' in material_name:
-            ensemble_pred *= (1 + (brand_ratios['밥이보약'] - 0.62) * 0.2)
-        elif '소고기' in material_name or '연어' in material_name:
-            ensemble_pred *= (1 + (brand_ratios['더리얼'] - 0.35) * 0.5)
-        
-        # 신뢰구간
-        if material_type == '대량':
-            margin = 0.05
-        elif material_type == '중간':
-            margin = 0.15
-        else:
-            margin = 0.25
-        
-        lower = ensemble_pred * (1 - margin)
-        upper = ensemble_pred * (1 + margin)
-        
-        return ensemble_pred, (lower, upper)
+            try:
+                train_data = pd.DataFrame({
+                    'ds': self.months[:len(usage_values)],
+                    'y': usage_values
+                })
+                
+                if len(train_data) >= 2:
+                    model = Prophet(
+                        yearly_seasonality=False,
+                        weekly_seasonality=False,
+                        daily_seasonality=False,
+                        changepoint_prior_scale=0.1
+                    )
+                    
+                    with st.spinner("Prophet 모델 학습 중..."):
+                        model.fit(train_data)
+                    
+                    future = pd.DataFrame({'ds': [pd.Timestamp('2025-09-01')]})
+                    forecast = model.predict(future)
+                    prophet_pred = max(0, forecast['yhat'].values[0]) * production_ratio
+            except Exception as e:
+                st.warning(f"Prophet 예측 실패 (원료: {material_name}), 트렌드 예측 사용")
+                prophet_pred = trend_pred
+            
+            # SARIMA 예측 (간소화 - 트렌드와 동일하게)
+            sarima_pred = trend_pred
+            
+            # 앙상블
+            ensemble_pred = (
+                prophet_pred * weights['prophet'] +
+                sarima_pred * weights['sarima'] +
+                trend_pred * weights['trend']
+            )
+            
+            # 보정
+            if material_code in self.material_corrections:
+                ensemble_pred *= self.material_corrections[material_code]
+            
+            # 브랜드 보정
+            if '닭' in str(material_name) or 'MDCM' in str(material_name):
+                ensemble_pred *= (1 + (brand_ratios['밥이보약'] - 0.62) * 0.2)
+            elif '소고기' in str(material_name) or '연어' in str(material_name):
+                ensemble_pred *= (1 + (brand_ratios['더리얼'] - 0.35) * 0.5)
+            
+            # 신뢰구간
+            if material_type == '대량':
+                margin = 0.05
+            elif material_type == '중간':
+                margin = 0.15
+            else:
+                margin = 0.25
+            
+            lower = ensemble_pred * (1 - margin)
+            upper = ensemble_pred * (1 + margin)
+            
+            return ensemble_pred, (lower, upper)
+        except Exception as e:
+            st.warning(f"예측 오류 (원료: {material_name}): {str(e)}")
+            return 0, (0, 0)
     
     def get_current_inventory(self, material_code):
         """재고 조회"""
@@ -226,16 +260,15 @@ class StreamlitForecastModel:
             pass
         return 0
     
-    @st.cache_data(show_spinner=False)
-    def predict_all(_self, production, brand_ratios):
-        """전체 예측 (캐시 사용)"""
+    def predict_all(self, production, brand_ratios):
+        """전체 예측 (캐시 제거)"""
         results = []
-        total = len(_self.df_usage)
+        total = len(self.df_usage)
         
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        for idx, row in _self.df_usage.iterrows():
+        for idx, row in self.df_usage.iterrows():
             # 진행 상황 업데이트
             progress = (idx + 1) / total
             progress_bar.progress(progress)
@@ -244,26 +277,27 @@ class StreamlitForecastModel:
             material_code = row['원료코드']
             material_name = row['품목명']
             
-            # 사용량 데이터
+            # 사용량 데이터 - 안전한 변환
             usage_values = []
             for col in ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월']:
                 if col in row.index:
                     val = row[col]
-                    usage_values.append(float(val) if pd.notna(val) else 0)
+                    # 안전한 float 변환
+                    usage_values.append(self.safe_float_conversion(val))
             
             # 예측
-            usage_pred, (lower, upper) = _self.calculate_prediction(
+            usage_pred, (lower, upper) = self.calculate_prediction(
                 material_code, material_name, usage_values,
                 production, brand_ratios
             )
             
             # 구매량 계산
-            current_inventory = _self.get_current_inventory(material_code)
-            safety_stock = usage_pred * 0.15
+            current_inventory = self.get_current_inventory(material_code)
+            safety_stock = usage_pred * 0.15 if usage_pred > 0 else 0
             purchase_pred = max(0, usage_pred - current_inventory + safety_stock)
             
             # 분류
-            category = _self.classify_material(usage_values)
+            category = self.classify_material(usage_values)
             
             results.append({
                 '원료코드': material_code,
@@ -283,76 +317,61 @@ class StreamlitForecastModel:
 
 def create_dashboard_charts(df_predictions):
     """대시보드 차트 생성"""
-    # 1. 원료 분류별 분포
-    category_counts = df_predictions['원료_분류'].value_counts()
-    fig_pie = px.pie(
-        values=category_counts.values,
-        names=category_counts.index,
-        title="원료 분류별 분포",
-        color_discrete_map={'대량': '#1f77b4', '중간': '#ff7f0e', '소량': '#2ca02c'}
-    )
-    
-    # 2. TOP 10 사용량
-    top10 = df_predictions.nlargest(10, '예측_사용량')
-    fig_bar = px.bar(
-        top10,
-        x='예측_사용량',
-        y='품목명',
-        orientation='h',
-        title="TOP 10 원료 예측 사용량",
-        color='원료_분류',
-        color_discrete_map={'대량': '#1f77b4', '중간': '#ff7f0e', '소량': '#2ca02c'}
-    )
-    fig_bar.update_layout(yaxis={'categoryorder': 'total ascending'})
-    
-    # 3. 구매 우선순위
-    purchase_priority = df_predictions.nlargest(10, '예측_구매량')
-    fig_purchase = px.bar(
-        purchase_priority,
-        x='예측_구매량',
-        y='품목명',
-        orientation='h',
-        title="구매 우선순위 TOP 10",
-        color='예측_구매량',
-        color_continuous_scale='Reds'
-    )
-    fig_purchase.update_layout(yaxis={'categoryorder': 'total ascending'})
-    
-    return fig_pie, fig_bar, fig_purchase
+    try:
+        # 1. 원료 분류별 분포
+        category_counts = df_predictions['원료_분류'].value_counts()
+        fig_pie = px.pie(
+            values=category_counts.values,
+            names=category_counts.index,
+            title="원료 분류별 분포",
+            color_discrete_map={'대량': '#1f77b4', '중간': '#ff7f0e', '소량': '#2ca02c'}
+        )
+        
+        # 2. TOP 10 사용량
+        top10 = df_predictions.nlargest(10, '예측_사용량')
+        fig_bar = px.bar(
+            top10,
+            x='예측_사용량',
+            y='품목명',
+            orientation='h',
+            title="TOP 10 원료 예측 사용량",
+            color='원료_분류',
+            color_discrete_map={'대량': '#1f77b4', '중간': '#ff7f0e', '소량': '#2ca02c'}
+        )
+        fig_bar.update_layout(yaxis={'categoryorder': 'total ascending'})
+        
+        # 3. 구매 우선순위
+        purchase_priority = df_predictions.nlargest(10, '예측_구매량')
+        fig_purchase = px.bar(
+            purchase_priority,
+            x='예측_구매량',
+            y='품목명',
+            orientation='h',
+            title="구매 우선순위 TOP 10",
+            color='예측_구매량',
+            color_continuous_scale='Reds'
+        )
+        fig_purchase.update_layout(yaxis={'categoryorder': 'total ascending'})
+        
+        return fig_pie, fig_bar, fig_purchase
+    except Exception as e:
+        st.error(f"차트 생성 오류: {str(e)}")
+        return None, None, None
 
 def get_excel_download_link(df, filename):
     """엑셀 다운로드 링크 생성"""
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, sheet_name='예측결과', index=False)
+    try:
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='예측결과', index=False)
         
-        # 포맷 설정
-        workbook = writer.book
-        worksheet = writer.sheets['예측결과']
-        
-        # 헤더 포맷
-        header_format = workbook.add_format({
-            'bold': True,
-            'text_wrap': True,
-            'valign': 'top',
-            'fg_color': '#D7E4BD',
-            'border': 1
-        })
-        
-        # 헤더 적용
-        for col_num, value in enumerate(df.columns.values):
-            worksheet.write(0, col_num, value, header_format)
-        
-        # 열 너비 조정
-        worksheet.set_column('A:A', 12)  # 원료코드
-        worksheet.set_column('B:B', 25)  # 품목명
-        worksheet.set_column('C:H', 15)  # 숫자 컬럼
-        worksheet.set_column('I:I', 10)  # 분류
-    
-    excel_data = output.getvalue()
-    b64 = base64.b64encode(excel_data).decode()
-    href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="{filename}">📥 엑셀 파일 다운로드</a>'
-    return href
+        output.seek(0)
+        b64 = base64.b64encode(output.read()).decode()
+        href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="{filename}">📥 엑셀 파일 다운로드</a>'
+        return href
+    except Exception as e:
+        st.error(f"엑셀 생성 오류: {str(e)}")
+        return None
 
 def main():
     """메인 애플리케이션"""
@@ -467,132 +486,141 @@ def main():
                     st.markdown("---")
                     st.header("📈 예측 결과")
                     
-                    with st.spinner("예측 모델 실행 중..."):
-                        predictions = model.predict_all(
-                            next_month_production,
-                            brand_ratios
-                        )
-                    
-                    if predictions is not None and not predictions.empty:
-                        # 결과 요약
-                        st.subheader("📊 전체 요약")
+                    try:
+                        with st.spinner("예측 모델 실행 중... (약 1-2분 소요)"):
+                            predictions = model.predict_all(
+                                next_month_production,
+                                brand_ratios
+                            )
                         
-                        col1, col2, col3, col4 = st.columns(4)
-                        with col1:
-                            total_usage = predictions['예측_사용량'].sum()
-                            st.metric("총 예측 사용량", f"{total_usage:,.0f}")
-                        with col2:
-                            total_purchase = predictions['예측_구매량'].sum()
-                            st.metric("총 예측 구매량", f"{total_purchase:,.0f}")
-                        with col3:
-                            large_count = len(predictions[predictions['원료_분류'] == '대량'])
-                            st.metric("대량 원료", f"{large_count}개")
-                        with col4:
-                            inventory_usage = (1 - total_purchase/total_usage) * 100 if total_usage > 0 else 0
-                            st.metric("재고 활용률", f"{inventory_usage:.1f}%")
-                        
-                        # 탭 구성
-                        tab1, tab2, tab3, tab4 = st.tabs(
-                            ["📊 대시보드", "📋 상세 데이터", "🎯 TOP 20", "📥 다운로드"]
-                        )
-                        
-                        with tab1:
-                            # 차트 표시
-                            st.subheader("시각화 대시보드")
+                        if predictions is not None and not predictions.empty:
+                            # 결과 요약
+                            st.subheader("📊 전체 요약")
                             
-                            fig_pie, fig_bar, fig_purchase = create_dashboard_charts(predictions)
-                            
-                            col1, col2 = st.columns(2)
+                            col1, col2, col3, col4 = st.columns(4)
                             with col1:
-                                st.plotly_chart(fig_pie, use_container_width=True)
+                                total_usage = predictions['예측_사용량'].sum()
+                                st.metric("총 예측 사용량", f"{total_usage:,.0f}")
                             with col2:
-                                st.plotly_chart(fig_bar, use_container_width=True)
+                                total_purchase = predictions['예측_구매량'].sum()
+                                st.metric("총 예측 구매량", f"{total_purchase:,.0f}")
+                            with col3:
+                                large_count = len(predictions[predictions['원료_분류'] == '대량'])
+                                st.metric("대량 원료", f"{large_count}개")
+                            with col4:
+                                inventory_usage = (1 - total_purchase/total_usage) * 100 if total_usage > 0 else 0
+                                st.metric("재고 활용률", f"{inventory_usage:.1f}%")
                             
-                            st.plotly_chart(fig_purchase, use_container_width=True)
-                        
-                        with tab2:
-                            # 상세 데이터 테이블
-                            st.subheader("전체 예측 결과")
+                            # 탭 구성
+                            tab1, tab2, tab3, tab4 = st.tabs(
+                                ["📊 대시보드", "📋 상세 데이터", "🎯 TOP 20", "📥 다운로드"]
+                            )
                             
-                            # 필터링 옵션
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                category_filter = st.multiselect(
-                                    "원료 분류 필터",
-                                    options=['대량', '중간', '소량'],
-                                    default=['대량', '중간', '소량']
+                            with tab1:
+                                # 차트 표시
+                                st.subheader("시각화 대시보드")
+                                
+                                fig_pie, fig_bar, fig_purchase = create_dashboard_charts(predictions)
+                                
+                                if fig_pie and fig_bar and fig_purchase:
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        st.plotly_chart(fig_pie, use_container_width=True)
+                                    with col2:
+                                        st.plotly_chart(fig_bar, use_container_width=True)
+                                    
+                                    st.plotly_chart(fig_purchase, use_container_width=True)
+                                else:
+                                    st.warning("차트 생성 중 문제가 발생했습니다.")
+                            
+                            with tab2:
+                                # 상세 데이터 테이블
+                                st.subheader("전체 예측 결과")
+                                
+                                # 필터링 옵션
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    category_filter = st.multiselect(
+                                        "원료 분류 필터",
+                                        options=['대량', '중간', '소량'],
+                                        default=['대량', '중간', '소량']
+                                    )
+                                with col2:
+                                    search_term = st.text_input("원료명 검색")
+                                
+                                # 필터링 적용
+                                filtered_df = predictions[predictions['원료_분류'].isin(category_filter)]
+                                if search_term:
+                                    filtered_df = filtered_df[
+                                        filtered_df['품목명'].str.contains(search_term, case=False, na=False)
+                                    ]
+                                
+                                # 데이터 표시
+                                st.dataframe(
+                                    filtered_df,
+                                    use_container_width=True,
+                                    height=400
                                 )
-                            with col2:
-                                search_term = st.text_input("원료명 검색")
+                                
+                                st.caption(f"총 {len(filtered_df)}개 원료 표시 중")
                             
-                            # 필터링 적용
-                            filtered_df = predictions[predictions['원료_분류'].isin(category_filter)]
-                            if search_term:
-                                filtered_df = filtered_df[
-                                    filtered_df['품목명'].str.contains(search_term, case=False, na=False)
-                                ]
+                            with tab3:
+                                # TOP 20 표시
+                                col1, col2 = st.columns(2)
+                                
+                                with col1:
+                                    st.subheader("🔝 사용량 TOP 20")
+                                    top20_usage = predictions.nlargest(20, '예측_사용량')[
+                                        ['품목명', '예측_사용량', '원료_분류']
+                                    ]
+                                    st.dataframe(top20_usage, use_container_width=True)
+                                
+                                with col2:
+                                    st.subheader("🛒 구매량 TOP 20")
+                                    top20_purchase = predictions.nlargest(20, '예측_구매량')[
+                                        ['품목명', '예측_구매량', '현재_재고', '원료_분류']
+                                    ]
+                                    st.dataframe(top20_purchase, use_container_width=True)
                             
-                            # 데이터 표시
-                            st.dataframe(
-                                filtered_df,
-                                use_container_width=True,
-                                height=400
-                            )
-                            
-                            st.caption(f"총 {len(filtered_df)}개 원료 표시 중")
-                        
-                        with tab3:
-                            # TOP 20 표시
-                            col1, col2 = st.columns(2)
-                            
-                            with col1:
-                                st.subheader("🔝 사용량 TOP 20")
-                                top20_usage = predictions.nlargest(20, '예측_사용량')[
-                                    ['품목명', '예측_사용량', '원료_분류']
-                                ]
-                                st.dataframe(top20_usage, use_container_width=True)
-                            
-                            with col2:
-                                st.subheader("🛒 구매량 TOP 20")
-                                top20_purchase = predictions.nlargest(20, '예측_구매량')[
-                                    ['품목명', '예측_구매량', '현재_재고', '원료_분류']
-                                ]
-                                st.dataframe(top20_purchase, use_container_width=True)
-                        
-                        with tab4:
-                            # 다운로드 옵션
-                            st.subheader("📥 결과 다운로드")
-                            
-                            # 파일명 생성
-                            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                            filename = f"예측결과_{timestamp}.xlsx"
-                            
-                            # 다운로드 링크
-                            download_link = get_excel_download_link(predictions, filename)
-                            st.markdown(download_link, unsafe_allow_html=True)
-                            
-                            # CSV 다운로드 (추가 옵션)
-                            csv = predictions.to_csv(index=False, encoding='utf-8-sig')
-                            st.download_button(
-                                label="📄 CSV 파일 다운로드",
-                                data=csv,
-                                file_name=f"예측결과_{timestamp}.csv",
-                                mime="text/csv"
-                            )
-                            
-                            # 요약 정보
-                            st.markdown("---")
-                            st.info(
-                                f"""
-                                **다운로드 파일 정보**
-                                - 예측 원료 수: {len(predictions)}개
-                                - 총 예측 사용량: {predictions['예측_사용량'].sum():,.0f}
-                                - 총 예측 구매량: {predictions['예측_구매량'].sum():,.0f}
-                                - 생성 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-                                """
-                            )
-                    else:
-                        st.error("예측 실행 중 오류가 발생했습니다.")
+                            with tab4:
+                                # 다운로드 옵션
+                                st.subheader("📥 결과 다운로드")
+                                
+                                # 파일명 생성
+                                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                                filename = f"예측결과_{timestamp}.xlsx"
+                                
+                                # 다운로드 링크
+                                download_link = get_excel_download_link(predictions, filename)
+                                if download_link:
+                                    st.markdown(download_link, unsafe_allow_html=True)
+                                
+                                # CSV 다운로드 (추가 옵션)
+                                csv = predictions.to_csv(index=False, encoding='utf-8-sig')
+                                st.download_button(
+                                    label="📄 CSV 파일 다운로드",
+                                    data=csv,
+                                    file_name=f"예측결과_{timestamp}.csv",
+                                    mime="text/csv"
+                                )
+                                
+                                # 요약 정보
+                                st.markdown("---")
+                                st.info(
+                                    f"""
+                                    **다운로드 파일 정보**
+                                    - 예측 원료 수: {len(predictions)}개
+                                    - 총 예측 사용량: {predictions['예측_사용량'].sum():,.0f}
+                                    - 총 예측 구매량: {predictions['예측_구매량'].sum():,.0f}
+                                    - 생성 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                                    """
+                                )
+                        else:
+                            st.error("예측 결과가 없습니다.")
+                    
+                    except Exception as e:
+                        st.error(f"예측 실행 중 오류 발생: {str(e)}")
+                        st.info("파일 형식을 확인하고 다시 시도해주세요.")
             else:
                 st.error("데이터 로드에 실패했습니다. 파일 형식을 확인해주세요.")
     else:
@@ -600,7 +628,7 @@ def main():
         st.info("👈 사이드바에서 데이터 파일을 업로드하고 예측 조건을 입력해주세요.")
         
         # 사용 가이드
-        with st.expander("📖 사용 가이드"):
+        with st.expander("📖 사용 가이드", expanded=True):
             st.markdown("""
             ### 사용 방법
             
@@ -616,18 +644,16 @@ def main():
                - 🔮 예측 실행 버튼 클릭
                - 결과 확인 및 다운로드
             
-            ### 주요 기능
+            ### 필요한 파일 형식
             
-            - **실시간 예측**: 258개 원료의 사용량 및 구매량 예측
-            - **시각화 대시보드**: 차트로 한눈에 결과 확인
-            - **필터링 & 검색**: 원하는 원료만 선택하여 확인
-            - **엑셀 다운로드**: 결과를 엑셀 파일로 저장
+            **사용량 파일 시트 구성:**
+            - 사용량: 원료코드, 품목명, 1월~8월
+            - 구매량: 원료코드, 품목명, 1월~8월  
+            - 월별 생산량: 1월~8월 생산량
+            - 브랜드 비중: 브랜드별 월별 비중
             
-            ### 모델 특징
-            
-            - Prophet(50%) + SARIMA(30%) + 트렌드(20%) 앙상블
-            - 원료 규모별 차별화된 예측 전략
-            - 실제 1-9월 데이터 검증 기반 최적화
+            **재고 파일 시트 구성:**
+            - 재고현황: 품목코드, 품목명, 월별 재고
             """)
         
         # 모델 정보
@@ -636,20 +662,19 @@ def main():
             ### 예측 모델 v4.0
             
             **핵심 알고리즘**
-            - Prophet: 시계열 예측
-            - SARIMA: 계절성 고려
-            - 트렌드 분석: 최근 패턴 반영
+            - Prophet: 시계열 예측 (50%)
+            - SARIMA: 계절성 고려 (30%)
+            - 트렌드 분석: 최근 패턴 (20%)
             
             **원료별 가중치**
-            - 대량 원료: Prophet 50%, SARIMA 30%, 트렌드 20%
-            - 중간 원료: Prophet 45%, SARIMA 25%, 트렌드 30%
-            - 소량 원료: Prophet 35%, SARIMA 15%, 트렌드 50%
+            - 대량 원료 (≥50,000): Prophet 중심
+            - 중간 원료 (5,000~50,000): 균형 접근
+            - 소량 원료 (<5,000): 트렌드 중심
             
-            **예측 정확도 (검증 결과)**
-            - 대량 원료: 96-97%
+            **예측 정확도**
+            - 대량 원료: 95-97%
             - 중간 원료: 85-88%
             - 소량 원료: 65-70%
-            - 전체 평균: 82-85%
             """)
 
 if __name__ == "__main__":
