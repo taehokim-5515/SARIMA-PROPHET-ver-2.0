@@ -139,21 +139,45 @@ class BOMHybridModel:
                     self.bom_available = False
                     return False
                 
+                # 디버깅: 데이터 구조 확인
+                st.write("🔍 BOM 데이터 미리보기 (처음 10행):")
+                st.dataframe(df_raw.head(10))
+                
                 current_product = None
                 for idx, row in df_raw.iterrows():
-                    if pd.notna(row.iloc[0]) and pd.isna(row.iloc[1]):
-                        current_product = row.iloc[0]
+                    # 첫 번째 컬럼 값 확인
+                    first_col = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ''
+                    second_col = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) and len(row) > 1 else ''
+                    third_col = str(row.iloc[2]).strip() if pd.notna(row.iloc[2]) and len(row) > 2 else ''
+                    
+                    # 제품명 행 (첫 번째 컬럼만 값이 있고, 두 번째가 비어있거나 헤더가 아님)
+                    if first_col and (not second_col or second_col == ''):
+                        current_product = first_col
                         self.bom_data[current_product] = []
-                    elif pd.notna(row.iloc[0]) and str(row.iloc[0]) != 'ERP 코드' and current_product:
+                        st.write(f"✅ 제품 발견: {current_product}")
+                    
+                    # 헤더 행 스킵
+                    elif first_col in ['ERP 코드', 'ERP코드', '원료코드']:
+                        continue
+                    
+                    # 원료 행
+                    elif first_col and second_col and third_col and current_product:
                         try:
+                            # 원료코드가 숫자인지 확인
+                            material_code = int(float(first_col))
+                            material_name = second_col
+                            ratio = float(third_col)
+                            
                             self.bom_data[current_product].append({
-                                '원료코드': int(float(row.iloc[0])),
-                                '원료명': str(row.iloc[1]),
-                                '배합률': float(row.iloc[2])
+                                '원료코드': material_code,
+                                '원료명': material_name,
+                                '배합률': ratio
                             })
-                        except:
+                        except (ValueError, TypeError) as e:
+                            # 숫자 변환 실패 시 스킵
                             continue
                 
+                # 자동 브랜드 매핑
                 self.brand_products = {'밥이보약': [], '더리얼': [], '기타': []}
                 for product_name in self.bom_data.keys():
                     brand = self.detect_brand(product_name)
@@ -166,10 +190,12 @@ class BOMHybridModel:
                     st.success(f"✅ BOM 데이터 로드 완료!\n- 총 {len(self.bom_data)}개 제품\n- 밥이보약: {brand_summary['밥이보약']}개\n- 더리얼: {brand_summary['더리얼']}개\n- 기타: {brand_summary['기타']}개")
                     return True
                 else:
-                    st.warning("⚠️ BOM 데이터가 비어있습니다.")
+                    st.warning(f"⚠️ BOM 데이터가 비어있습니다. 파싱된 제품 수: {len(self.bom_data)}")
                     return False
         except Exception as e:
-            st.warning(f"⚠️ BOM 데이터 로드 실패: {str(e)}")
+            st.error(f"⚠️ BOM 데이터 로드 실패: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
             self.bom_available = False
             return False
     
@@ -875,4 +901,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
