@@ -192,6 +192,7 @@ class BOMHybridModel:
             return None
         
         total_requirement = 0.0
+        found_in_products = []  # 매칭된 제품 추적
         
         # 브랜드별 생산량 계산
         for brand, ratio in brand_ratios.items():
@@ -210,8 +211,9 @@ class BOMHybridModel:
                 if product in self.bom_data:
                     bom = self.bom_data[product]
                     for item in bom:
-                        if item['원료코드'] == material_code:
+                        if item['원료코드'] == material_code:  # 원료코드로 매칭
                             material_ratios.append(item['배합률'])
+                            found_in_products.append(product)
                             break
             
             # 평균 배합률
@@ -968,3 +970,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
