@@ -1,6 +1,6 @@
 """
 Prophet + BOM 하이브리드 모델 v8.0 - Streamlit 앱
-Google Sheets 실시간 연동
+Google Sheets 서비스 계정 연동
 실제 패턴(Prophet 65%) 중심, BOM 참고용(15%)
 안전장치로 BOM 과대예측 방지
 실행: streamlit run app.py
@@ -18,7 +18,9 @@ from datetime import datetime
 import io
 import base64
 import time
-from urllib.parse import quote
+import json
+from google.oauth2.service_account import Credentials
+import gspread
 warnings.filterwarnings('ignore')
 
 # 페이지 설정
@@ -82,14 +84,59 @@ GOOGLE_SHEETS_CONFIG = {
     'bom': '1vdkYQ9tQzuj_juXZPhgEsDdhAXGWqtCejXLZHXNsAws'
 }
 
-def read_google_sheet(sheet_id, sheet_name):
-    """Google Sheets에서 데이터 읽기"""
+def get_gspread_client():
+    """서비스 계정으로 gspread 클라이언트 생성"""
     try:
-        # URL encode sheet name
-        encoded_sheet_name = quote(sheet_name)
-        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet={encoded_sheet_name}"
-        df = pd.read_csv(url)
-        return df
+        # Streamlit secrets에서 서비스 계정 정보 가져오기
+        if "gcp_service_account" in st.secrets:
+            service_account_info = dict(st.secrets["gcp_service_account"])
+        elif 'service_account_json' in st.session_state and st.session_state.service_account_json:
+            # 사이드바에서 입력한 경우
+            service_account_info = st.session_state.service_account_json
+        else:
+            return None
+        
+        # 권한 설정
+        scopes = [
+            'https://www.googleapis.com/auth/spreadsheets.readonly',
+            'https://www.googleapis.com/auth/drive.readonly'
+        ]
+        
+        # 인증
+        credentials = Credentials.from_service_account_info(
+            service_account_info,
+            scopes=scopes
+        )
+        
+        # gspread 클라이언트 생성
+        client = gspread.authorize(credentials)
+        return client
+    
+    except Exception as e:
+        st.error(f"❌ 서비스 계정 인증 실패: {str(e)}")
+        return None
+
+def read_google_sheet(sheet_id, sheet_name):
+    """Google Sheets에서 데이터 읽기 (서비스 계정)"""
+    try:
+        client = get_gspread_client()
+        if client is None:
+            return None
+        
+        # 스프레드시트 열기
+        spreadsheet = client.open_by_key(sheet_id)
+        
+        # 워크시트 선택
+        worksheet = spreadsheet.worksheet(sheet_name)
+        
+        # DataFrame으로 변환
+        data = worksheet.get_all_values()
+        if len(data) > 0:
+            df = pd.DataFrame(data[1:], columns=data[0])
+            return df
+        else:
+            return None
+    
     except Exception as e:
         st.error(f"❌ '{sheet_name}' 시트 로드 실패: {str(e)}")
         return None
