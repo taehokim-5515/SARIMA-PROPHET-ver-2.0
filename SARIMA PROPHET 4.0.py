@@ -137,48 +137,78 @@ class StreamlitProphetTrendModel:
         self.months = pd.date_range(start='2025-01-01', periods=num_months, freq='MS')
         self.num_months = num_months
         
-        # 생산량 데이터
+        # 기본값 (12개월 분량)
+        default_prod = [345, 430, 554, 570, 522, 556, 606, 539, 580, 600, 620, 550]
+        
+        # 생산량 데이터 - 정확히 num_months 길이로 맞추기
         production_values = []
-        production_row = self.df_production.iloc[0] if len(self.df_production) > 0 else self.df_production
         
-        for col in self.available_months:
-            if col in self.df_production.columns:
-                try:
-                    val = production_row[col]
-                    if isinstance(val, str) and '톤' in val:
-                        production_values.append(float(val.replace('톤', '').strip()))
-                    elif pd.notna(val):
-                        production_values.append(float(val))
-                except:
-                    production_values.append(0)
+        if len(self.df_production) > 0:
+            production_row = self.df_production.iloc[0]
+            
+            for i, col in enumerate(self.available_months):
+                if col in self.df_production.columns:
+                    try:
+                        val = production_row[col]
+                        if isinstance(val, str) and '톤' in val:
+                            production_values.append(float(val.replace('톤', '').strip()))
+                        elif pd.notna(val) and val != 0:
+                            production_values.append(float(val))
+                        else:
+                            # 값이 없으면 기본값 사용
+                            production_values.append(default_prod[i])
+                    except:
+                        production_values.append(default_prod[i])
+                else:
+                    production_values.append(default_prod[i])
         
-        if not production_values:
-            # 기본값도 동적으로
-            default_values = [345, 430, 554, 570, 522, 556, 606, 539, 580, 600, 620, 550]
-            production_values = default_values[:num_months]
+        # 여전히 비어있으면 기본값 사용
+        if len(production_values) == 0:
+            production_values = default_prod[:num_months]
         
+        # 길이를 정확히 맞추기
+        while len(production_values) < num_months:
+            production_values.append(default_prod[len(production_values)])
+        
+        production_values = production_values[:num_months]
+        
+        # DataFrame 생성
         self.production_ts = pd.DataFrame({
             'ds': self.months,
-            'y': production_values[:num_months]
+            'y': production_values
         })
         
-        # 브랜드 비중
+        # 브랜드 비중 - 정확히 num_months 길이로 맞추기
         self.brand_ratios = {}
+        default_ratios = {'밥이보약': 0.65, '더리얼': 0.33, '기타': 0.02}
+        
         for brand in ['밥이보약', '더리얼', '기타']:
+            ratios = []
+            
             try:
                 brand_row = self.df_brand[self.df_brand.iloc[:, 0] == brand]
+                
                 if not brand_row.empty:
-                    ratios = []
                     for col in self.available_months:
                         if col in self.df_brand.columns:
-                            ratios.append(float(brand_row[col].values[0]))
-                    self.brand_ratios[brand] = ratios
-                else:
-                    default_ratio = [0.65, 0.33, 0.02][['밥이보약', '더리얼', '기타'].index(brand)]
-                    self.brand_ratios[brand] = [default_ratio] * num_months
+                            try:
+                                val = float(brand_row[col].values[0])
+                                ratios.append(val)
+                            except:
+                                ratios.append(default_ratios[brand])
+                        else:
+                            ratios.append(default_ratios[brand])
             except:
-                default_ratio = [0.65, 0.33, 0.02][['밥이보약', '더리얼', '기타'].index(brand)]
-                self.brand_ratios[brand] = [default_ratio] * num_months
+                pass
+            
+            # 기본값 사용 또는 길이 맞추기
+            if len(ratios) == 0:
+                ratios = [default_ratios[brand]] * num_months
+            
+            while len(ratios) < num_months:
+                ratios.append(default_ratios[brand])
+            
+            self.brand_ratios[brand] = ratios[:num_months]
     
     def safe_float(self, val):
         """안전한 float 변환"""
@@ -722,6 +752,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
