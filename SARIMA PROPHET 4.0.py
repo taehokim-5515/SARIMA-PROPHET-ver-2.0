@@ -79,7 +79,7 @@ def get_gspread_client():
         return None
 
 def read_google_sheet(sheet_id, sheet_name, use_header=True):
-    """Google Sheets에서 데이터 읽기 (타입 변환 개선)"""
+    """Google Sheets에서 데이터 읽기 (안전한 타입 변환)"""
     try:
         client = get_gspread_client()
         if client is None:
@@ -96,21 +96,33 @@ def read_google_sheet(sheet_id, sheet_name, use_header=True):
             # 첫 행을 헤더로 사용
             df = pd.DataFrame(data[1:], columns=data[0])
             
-            # 🔥 핵심 수정: 숫자형 컬럼 자동 변환
+            # 🔥 안전한 타입 변환 (에러 방지)
             for col in df.columns:
-                # 원료코드, 품목코드 등은 정수형으로
-                if '코드' in col:
-                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
-                # 월별 데이터는 실수형으로
-                elif '월' in col or col in ['1월', '2월', '3월', '4월', '5월', '6월', 
-                                           '7월', '8월', '9월', '10월', '11월', '12월']:
-                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-                # 기타 숫자 가능성 있는 컬럼
-                else:
-                    # 숫자로 변환 시도
-                    temp = pd.to_numeric(df[col], errors='coerce')
-                    if temp.notna().sum() > len(df) * 0.5:  # 50% 이상 숫자면 숫자 컬럼으로
-                        df[col] = temp.fillna(0)
+                try:
+                    # 빈 컬럼이거나 모든 값이 비어있으면 스킵
+                    if df[col].empty or df[col].isna().all() or (df[col] == '').all():
+                        continue
+                    
+                    # 원료코드, 품목코드 등은 정수형으로
+                    if '코드' in col:
+                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
+                    
+                    # 월별 데이터는 실수형으로
+                    elif '월' in col or col in ['1월', '2월', '3월', '4월', '5월', '6월', 
+                                               '7월', '8월', '9월', '10월', '11월', '12월']:
+                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                    
+                    # 기타 숫자 가능성 있는 컬럼
+                    else:
+                        # 숫자로 변환 시도
+                        temp = pd.to_numeric(df[col], errors='coerce')
+                        if temp.notna().sum() > len(df) * 0.5:  # 50% 이상 숫자면 숫자 컬럼으로
+                            df[col] = temp.fillna(0)
+                
+                except Exception as col_error:
+                    # 개별 컬럼 변환 실패 시 경고만 출력하고 계속 진행
+                    st.warning(f"⚠️ '{sheet_name}' 시트의 '{col}' 컬럼 변환 실패: {str(col_error)}")
+                    continue
         else:
             # 헤더 없이 모든 데이터 가져오기 (BOM용)
             df = pd.DataFrame(data)
