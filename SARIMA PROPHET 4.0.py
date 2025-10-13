@@ -186,7 +186,7 @@ class StreamlitProphetTrendModel:
             ratios = []
             
             try:
-                brand_row = self.df_brand[self.df_brand.iloc[:, 0] == brand]"""
+                brand_row = self.df_brand[self.df_brand.iloc[:, 0] == brand]""
 Prophet + 트렌드 최적화 모델 v6.0 - Streamlit 앱
 SARIMA 제거로 더 빠르고 안정적인 예측
 실행: streamlit run app.py
@@ -954,6 +954,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
