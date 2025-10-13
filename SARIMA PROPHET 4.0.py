@@ -736,9 +736,9 @@ def main():
         st.markdown("**브랜드 비중 (%)**")
         col1, col2 = st.columns(2)
         with col1:
-            bob = st.slider("밥이보약", 0, 100, 60, 5)
+            bob = st.slider("밥이보약", 0, 100, 60, 1)
         with col2:
-            real = st.slider("더리얼", 0, 100, 35, 5)
+            real = st.slider("더리얼", 0, 100, 35, 1)
         
         etc = 100 - bob - real
         if etc < 0:
@@ -936,3 +936,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
