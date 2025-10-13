@@ -121,7 +121,7 @@ def test_read_spreadsheet(client, spreadsheet_id, spreadsheet_name):
         return None, []
 
 def test_read_worksheet(spreadsheet, sheet_name):
-    """개별 워크시트 읽기 테스트"""
+    """개별 워크시트 읽기 테스트 (개선 버전)"""
     st.subheader(f"📋 시트 읽기: '{sheet_name}'")
     
     try:
@@ -144,27 +144,78 @@ def test_read_worksheet(spreadsheet, sheet_name):
         
         log_info(f"✅ 데이터 읽기 성공: {len(data)}행", level="success")
         
-        # DataFrame 변환
-        log_info("DataFrame 변환 중...")
-        df = pd.DataFrame(data[1:], columns=data[0])
+        # 원시 데이터 먼저 표시 (처음 5행)
+        st.warning("🔍 **원시 데이터 확인** (처음 5행)")
+        with st.expander("원시 데이터 보기 (중요!)"):
+            for idx, row in enumerate(data[:5]):
+                st.write(f"**행 {idx}:** {row[:10]}...")  # 처음 10개 컬럼만
         
-        st.success(f"📊 DataFrame 생성 완료!")
-        st.write(f"- Shape: {df.shape}")
-        st.write(f"- Columns: {list(df.columns)}")
+        # 헤더 행 선택
+        st.info("📌 헤더가 몇 번째 행에 있나요?")
+        header_row = st.selectbox(
+            f"'{sheet_name}' 헤더 행 선택:",
+            options=[0, 1, 2, 3],
+            index=0,
+            help="0 = 첫 번째 행, 1 = 두 번째 행, ..."
+        )
         
-        # 데이터 미리보기
-        with st.expander("🔍 데이터 미리보기 (처음 10행)"):
-            st.dataframe(df.head(10))
+        # DataFrame 변환 (선택된 헤더로)
+        log_info(f"DataFrame 변환 중 (헤더: 행 {header_row})...")
         
-        # 데이터 타입 확인
-        with st.expander("📋 컬럼별 데이터 타입"):
-            st.write(df.dtypes)
-        
-        # 통계 정보
-        with st.expander("📈 기본 통계"):
-            st.write(df.describe(include='all'))
-        
-        return df
+        try:
+            if header_row == 0:
+                df = pd.DataFrame(data[1:], columns=data[0])
+            else:
+                df = pd.DataFrame(data[header_row+1:], columns=data[header_row])
+            
+            # 중복 컬럼명 처리
+            if len(df.columns) != len(set(df.columns)):
+                st.warning("⚠️ 중복된 컬럼명 발견! 자동으로 수정합니다...")
+                
+                # 중복 컬럼명에 번호 추가
+                new_columns = []
+                col_count = {}
+                
+                for col in df.columns:
+                    if col == '' or col is None:
+                        col = 'Unnamed'
+                    
+                    if col in col_count:
+                        col_count[col] += 1
+                        new_columns.append(f"{col}_{col_count[col]}")
+                    else:
+                        col_count[col] = 0
+                        new_columns.append(col)
+                
+                df.columns = new_columns
+                st.success(f"✅ 컬럼명 수정 완료!")
+                st.write(f"수정된 컬럼: {list(df.columns)}")
+            
+            st.success(f"📊 DataFrame 생성 완료!")
+            st.write(f"- Shape: {df.shape}")
+            st.write(f"- Columns: {list(df.columns[:10])}...")  # 처음 10개만
+            
+            # 데이터 미리보기
+            with st.expander("🔍 데이터 미리보기 (처음 10행)"):
+                st.dataframe(df.head(10))
+            
+            # 데이터 타입 확인
+            with st.expander("📋 컬럼별 데이터 타입"):
+                st.write(df.dtypes)
+            
+            # 통계 정보
+            with st.expander("📈 기본 통계"):
+                try:
+                    st.write(df.describe(include='all'))
+                except:
+                    st.write("통계 생성 실패")
+            
+            return df
+            
+        except Exception as e:
+            log_info(f"DataFrame 변환 실패: {str(e)}", level="error")
+            st.code(traceback.format_exc())
+            return None
         
     except gspread.exceptions.WorksheetNotFound:
         log_info(f"시트 '{sheet_name}'을 찾을 수 없습니다!", level="error")
