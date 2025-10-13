@@ -1,178 +1,156 @@
 """
-디버깅 버전 - Google Sheets 연동 테스트
-문제 발생 지점을 정확히 파악하기 위한 상세 로깅
+Prophet + BOM 하이브리드 모델 v7.1 - Google Sheets 연동
+실제 패턴(Prophet 65%) 중심, BOM 참고용(15%)
+안전장치로 BOM 과대예측 방지
+정확도 대폭 향상
 
-실행: streamlit run app_debug.py
+실행 전 설치:
+pip install streamlit pandas numpy prophet plotly gspread google-auth openpyxl
+
+실행: streamlit run app_google_sheets.py
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
+from prophet import Prophet
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import warnings
 from datetime import datetime
+import io
+import base64
+import time
 import gspread
 from google.oauth2.service_account import Credentials
 import json
-import traceback
 
 warnings.filterwarnings('ignore')
 
 # 페이지 설정
 st.set_page_config(
-    page_title="🔍 디버깅 모드",
-    page_icon="🔍",
-    layout="wide"
+    page_title="원료 예측 시스템 v7.1 (Google Sheets)",
+    page_icon="🎯",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-st.title("🔍 Google Sheets 연동 디버깅 모드")
-st.markdown("각 단계별로 상세한 정보를 확인할 수 있어요!")
+# CSS 스타일
+st.markdown("""
+<style>
+    .main {
+        padding: 0rem 1rem;
+    }
+    .metric-container {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 0.5rem 0;
+    }
+    h1 {
+        color: #1f77b4;
+    }
+    .success-box {
+        background-color: #d4edda;
+        border: 1px solid #c3e6cb;
+        border-radius: 0.25rem;
+        padding: 0.75rem;
+        margin: 1rem 0;
+    }
+    .info-box {
+        background-color: #d1ecf1;
+        border: 1px solid #bee5eb;
+        border-radius: 0.25rem;
+        padding: 0.75rem;
+        margin: 1rem 0;
+    }
+    .bom-badge {
+        background-color: #28a745;
+        color: white;
+        padding: 0.2rem 0.5rem;
+        border-radius: 0.25rem;
+        font-size: 0.8rem;
+    }
+    .google-sheets-badge {
+        background-color: #34a853;
+        color: white;
+        padding: 0.2rem 0.5rem;
+        border-radius: 0.25rem;
+        font-size: 0.8rem;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# 스프레드시트 URL
+# 스프레드시트 URL (하드코딩)
 SPREADSHEET_URLS = {
     'bom': '1vdkYQ9tQzuj_juXZPhgEsDdhAXGWqtCejXLZHXNsAws',
     'usage': '1lBanCoyOxv71LmXT316mO4XRccMyv5ETKcTcvm8wfvI',
     'inventory': '1k0_QxRBetfP8dFhHH5J478aFPvoMDvn_OPj1428CAzw'
 }
 
-def log_info(message, data=None, level="info"):
-    """로그 출력 헬퍼"""
-    if level == "info":
-        st.info(f"ℹ️ {message}")
-    elif level == "success":
-        st.success(f"✅ {message}")
-    elif level == "warning":
-        st.warning(f"⚠️ {message}")
-    elif level == "error":
-        st.error(f"❌ {message}")
+class GoogleSheetsConnector:
+    """Google Sheets 연결 관리자"""
     
-    if data is not None:
-        with st.expander("📊 데이터 상세보기"):
-            st.write(data)
-
-def test_google_sheets_connection(credentials_json):
-    """Google Sheets 연결 테스트"""
-    st.header("1️⃣ Google Sheets 연결 테스트")
+    def __init__(self):
+        self.client = None
+        self.connected = False
     
-    try:
-        # JSON 파싱
-        log_info("JSON 키 파싱 중...")
-        if isinstance(credentials_json, bytes):
-            credentials_dict = json.loads(credentials_json.decode('utf-8'))
-        else:
-            credentials_dict = json.loads(credentials_json)
-        
-        log_info("✅ JSON 키 파싱 성공", level="success")
-        
-        # 서비스 계정 이메일 표시
-        service_email = credentials_dict.get('client_email', 'N/A')
-        st.info(f"📧 서비스 계정: `{service_email}`")
-        st.warning("⚠️ 이 이메일이 스프레드시트에 공유되어 있는지 확인하세요!")
-        
-        # 인증 범위 설정
-        log_info("인증 범위 설정 중...")
-        scopes = [
-            'https://www.googleapis.com/auth/spreadsheets.readonly',
-            'https://www.googleapis.com/auth/drive.readonly'
-        ]
-        
-        # 자격증명 생성
-        log_info("자격증명 생성 중...")
-        creds = Credentials.from_service_account_info(
-            credentials_dict,
-            scopes=scopes
-        )
-        
-        # gspread 클라이언트 생성
-        log_info("gspread 클라이언트 생성 중...")
-        client = gspread.authorize(creds)
-        
-        log_info("✅ Google Sheets 연결 성공!", level="success")
-        
-        return client
-        
-    except Exception as e:
-        log_info(f"연결 실패: {str(e)}", level="error")
-        st.code(traceback.format_exc())
-        return None
-
-def test_read_spreadsheet(client, spreadsheet_id, spreadsheet_name):
-    """개별 스프레드시트 읽기 테스트"""
-    st.header(f"2️⃣ 스프레드시트 읽기 테스트: {spreadsheet_name}")
-    
-    try:
-        log_info(f"스프레드시트 ID: `{spreadsheet_id}` 열기 중...")
-        spreadsheet = client.open_by_key(spreadsheet_id)
-        
-        log_info(f"✅ 스프레드시트 열기 성공: '{spreadsheet.title}'", level="success")
-        
-        # 모든 시트 목록 표시
-        worksheets = spreadsheet.worksheets()
-        sheet_titles = [ws.title for ws in worksheets]
-        
-        st.success(f"📄 발견된 시트 목록 ({len(sheet_titles)}개):")
-        for idx, title in enumerate(sheet_titles, 1):
-            st.write(f"  {idx}. `{title}`")
-        
-        return spreadsheet, sheet_titles
-        
-    except Exception as e:
-        log_info(f"스프레드시트 열기 실패: {str(e)}", level="error")
-        st.code(traceback.format_exc())
-        return None, []
-
-def test_read_worksheet(spreadsheet, sheet_name):
-    """개별 워크시트 읽기 테스트 (개선 버전)"""
-    st.subheader(f"📋 시트 읽기: '{sheet_name}'")
-    
-    try:
-        log_info(f"시트 '{sheet_name}' 선택 중...")
-        worksheet = spreadsheet.worksheet(sheet_name)
-        
-        log_info(f"✅ 시트 선택 성공", level="success")
-        
-        # 시트 정보
-        st.write(f"- 행 수: {worksheet.row_count}")
-        st.write(f"- 열 수: {worksheet.col_count}")
-        
-        # 데이터 읽기
-        log_info("데이터 읽기 중...")
-        data = worksheet.get_all_values()
-        
-        if not data:
-            log_info("⚠️ 시트가 비어있습니다!", level="warning")
-            return None
-        
-        log_info(f"✅ 데이터 읽기 성공: {len(data)}행", level="success")
-        
-        # 원시 데이터 먼저 표시 (처음 5행)
-        st.warning("🔍 **원시 데이터 확인** (처음 5행)")
-        with st.expander("원시 데이터 보기 (중요!)"):
-            for idx, row in enumerate(data[:5]):
-                st.write(f"**행 {idx}:** {row[:10]}...")  # 처음 10개 컬럼만
-        
-        # 헤더 행 선택
-        st.info("📌 헤더가 몇 번째 행에 있나요?")
-        header_row = st.selectbox(
-            f"'{sheet_name}' 헤더 행 선택:",
-            options=[0, 1, 2, 3],
-            index=0,
-            help="0 = 첫 번째 행, 1 = 두 번째 행, ..."
-        )
-        
-        # DataFrame 변환 (선택된 헤더로)
-        log_info(f"DataFrame 변환 중 (헤더: 행 {header_row})...")
-        
+    def connect(self, credentials_json):
+        """Google Sheets API 연결"""
         try:
-            if header_row == 0:
-                df = pd.DataFrame(data[1:], columns=data[0])
+            # JSON 파싱
+            if isinstance(credentials_json, bytes):
+                credentials_dict = json.loads(credentials_json.decode('utf-8'))
             else:
-                df = pd.DataFrame(data[header_row+1:], columns=data[header_row])
+                credentials_dict = json.loads(credentials_json)
+            
+            # 인증 범위 설정
+            scopes = [
+                'https://www.googleapis.com/auth/spreadsheets.readonly',
+                'https://www.googleapis.com/auth/drive.readonly'
+            ]
+            
+            # 자격증명 생성
+            creds = Credentials.from_service_account_info(
+                credentials_dict,
+                scopes=scopes
+            )
+            
+            # gspread 클라이언트 생성
+            self.client = gspread.authorize(creds)
+            self.connected = True
+            
+            return True
+            
+        except Exception as e:
+            st.error(f"❌ Google Sheets 연결 실패: {str(e)}")
+            self.connected = False
+            return False
+    
+    def read_sheet(self, spreadsheet_id, sheet_name):
+        """스프레드시트에서 데이터 읽기 (개선 버전)"""
+        try:
+            if not self.connected:
+                raise Exception("Google Sheets에 연결되지 않았습니다.")
+            
+            # 스프레드시트 열기
+            spreadsheet = self.client.open_by_key(spreadsheet_id)
+            
+            # 워크시트 선택
+            worksheet = spreadsheet.worksheet(sheet_name)
+            
+            # 데이터를 DataFrame으로 변환
+            data = worksheet.get_all_values()
+            
+            if not data:
+                return pd.DataFrame()
+            
+            # 첫 행을 헤더로 사용
+            df = pd.DataFrame(data[1:], columns=data[0])
             
             # 중복 컬럼명 처리
             if len(df.columns) != len(set(df.columns)):
-                st.warning("⚠️ 중복된 컬럼명 발견! 자동으로 수정합니다...")
-                
-                # 중복 컬럼명에 번호 추가
                 new_columns = []
                 col_count = {}
                 
@@ -188,266 +166,1116 @@ def test_read_worksheet(spreadsheet, sheet_name):
                         new_columns.append(col)
                 
                 df.columns = new_columns
-                st.success(f"✅ 컬럼명 수정 완료!")
-                st.write(f"수정된 컬럼: {list(df.columns)}")
-            
-            st.success(f"📊 DataFrame 생성 완료!")
-            st.write(f"- Shape: {df.shape}")
-            st.write(f"- Columns: {list(df.columns[:10])}...")  # 처음 10개만
-            
-            # 데이터 미리보기
-            with st.expander("🔍 데이터 미리보기 (처음 10행)"):
-                st.dataframe(df.head(10))
-            
-            # 데이터 타입 확인
-            with st.expander("📋 컬럼별 데이터 타입"):
-                st.write(df.dtypes)
-            
-            # 통계 정보
-            with st.expander("📈 기본 통계"):
-                try:
-                    st.write(df.describe(include='all'))
-                except:
-                    st.write("통계 생성 실패")
             
             return df
             
         except Exception as e:
-            log_info(f"DataFrame 변환 실패: {str(e)}", level="error")
-            st.code(traceback.format_exc())
+            st.error(f"❌ 시트 '{sheet_name}' 읽기 실패: {str(e)}")
+            return None
+    
+    def read_sheet_with_header(self, spreadsheet_id, sheet_name, header_row=0):
+        """헤더 위치를 지정하여 스프레드시트 읽기"""
+        try:
+            if not self.connected:
+                raise Exception("Google Sheets에 연결되지 않았습니다.")
+            
+            spreadsheet = self.client.open_by_key(spreadsheet_id)
+            worksheet = spreadsheet.worksheet(sheet_name)
+            
+            # 모든 데이터 가져오기
+            data = worksheet.get_all_values()
+            
+            if len(data) <= header_row:
+                return pd.DataFrame()
+            
+            # 지정된 행을 헤더로 사용
+            df = pd.DataFrame(data[header_row + 1:], columns=data[header_row])
+            
+            return df
+            
+        except Exception as e:
+            st.error(f"❌ 시트 읽기 실패: {str(e)}")
+            return None
+
+class BOMHybridModel:
+    """BOM 하이브리드 예측 모델 v7.1 (Google Sheets 버전)"""
+    
+    def __init__(self, sheets_connector):
+        """모델 초기화"""
+        self.sheets = sheets_connector
+        
+        # 하이브리드 가중치 (실제 패턴 중심, BOM 참고용)
+        self.hybrid_weights = {
+            '대량': {
+                'bom': 0.15,       # BOM 기반 (참고용) - 축소
+                'prophet': 0.65,   # Prophet (실제 패턴) - 대폭 강화!
+                'trend': 0.15,     # 트렌드
+                'ma': 0.05,        # 이동평균
+                'confidence_level': 0.90,
+                'base_margin': 0.06
+            },
+            '중간': {
+                'bom': 0.15,
+                'prophet': 0.60,
+                'trend': 0.15,
+                'ma': 0.10,
+                'confidence_level': 0.85,
+                'base_margin': 0.10
+            },
+            '소량': {
+                'bom': 0.10,
+                'prophet': 0.60,
+                'trend': 0.20,
+                'ma': 0.10,
+                'confidence_level': 0.80,
+                'base_margin': 0.18
+            }
+        }
+        
+        # 검증된 보정계수
+        self.material_corrections = {
+            1010101: 1.00,   # 닭고기 MDCM
+            1030501: 0.95,   # 콘그릿츠
+            1050801: 1.00,   # 녹색 완두
+            1010301: 0.73,   # 소고기 분쇄육
+            1010401: 0.70,   # 연어
+            1010201: 0.90,   # 오리고기
+        }
+        
+        # BOM 데이터
+        self.bom_data = {}
+        self.bom_available = False
+        self.brand_products = {}
+    
+    def detect_brand(self, product_name):
+        """제품명에서 브랜드 자동 감지"""
+        product_name_lower = str(product_name).lower()
+        
+        if '밥이보약' in product_name:
+            return '밥이보약'
+        elif '더리얼' in product_name:
+            return '더리얼'
+        elif '마푸' in product_name or '프라임펫' in product_name or \
+             '닥터썸업' in product_name or '펫후' in product_name or \
+             '용가리' in product_name or '맥시칸' in product_name:
+            return '기타'
+        else:
+            return '기타'
+    
+    def load_bom_data(self):
+        """Google Sheets에서 BOM 데이터 로드"""
+        try:
+            with st.spinner("📦 BOM 데이터 로딩 중 (Google Sheets)..."):
+                # BOM 시트 읽기 (헤더 없음)
+                spreadsheet = self.sheets.client.open_by_key(SPREADSHEET_URLS['bom'])
+                worksheet = spreadsheet.worksheet('제품 BOM')
+                data = worksheet.get_all_values()
+                
+                # DataFrame 생성 (헤더 없음)
+                df_raw = pd.DataFrame(data)
+                
+                # BOM 파싱
+                current_product = None
+                
+                for idx, row in df_raw.iterrows():
+                    # 제품명 행 (첫 번째 셀만 값이 있음)
+                    if pd.notna(row[0]) and row[0] != '' and \
+                       (pd.isna(row[1]) or row[1] == '') and \
+                       (pd.isna(row[2]) or row[2] == ''):
+                        current_product = row[0]
+                        self.bom_data[current_product] = []
+                    # 원료 행 (헤더 제외)
+                    elif pd.notna(row[0]) and row[0] != '' and \
+                         row[0] != 'ERP 코드' and current_product:
+                        try:
+                            self.bom_data[current_product].append({
+                                '원료코드': int(float(row[0])) if row[0] else 0,
+                                '원료명': row[1] if len(row) > 1 else '',
+                                '배합률': float(row[2]) if len(row) > 2 and row[2] else 0.0
+                            })
+                        except:
+                            continue
+                
+                # 자동 브랜드 매핑 생성
+                self.brand_products = {'밥이보약': [], '더리얼': [], '기타': []}
+                
+                for product_name in self.bom_data.keys():
+                    brand = self.detect_brand(product_name)
+                    self.brand_products[brand].append(product_name)
+                
+                self.bom_available = len(self.bom_data) > 0
+                
+                if self.bom_available:
+                    brand_summary = {
+                        brand: len(products) 
+                        for brand, products in self.brand_products.items()
+                    }
+                    st.success(
+                        f"✅ BOM 데이터 로드 완료! (Google Sheets 연동)\n"
+                        f"- 총 {len(self.bom_data)}개 제품\n"
+                        f"- 밥이보약: {brand_summary['밥이보약']}개\n"
+                        f"- 더리얼: {brand_summary['더리얼']}개\n"
+                        f"- 기타: {brand_summary['기타']}개"
+                    )
+                    return True
+                else:
+                    st.warning("⚠️ BOM 데이터가 비어있습니다.")
+                    return False
+                    
+        except Exception as e:
+            st.warning(f"⚠️ BOM 데이터 로드 실패: {str(e)}\n기존 방식으로 예측합니다.")
+            self.bom_available = False
+            return False
+    
+    def calculate_bom_requirement(self, material_code, production_ton, brand_ratios):
+        """BOM 기반 원료 필요량 계산"""
+        if not self.bom_available:
             return None
         
-    except gspread.exceptions.WorksheetNotFound:
-        log_info(f"시트 '{sheet_name}'을 찾을 수 없습니다!", level="error")
-        return None
-    except Exception as e:
-        log_info(f"시트 읽기 실패: {str(e)}", level="error")
-        st.code(traceback.format_exc())
-        return None
-
-def test_data_processing(df, sheet_name):
-    """데이터 처리 테스트"""
-    st.subheader(f"🔧 데이터 처리 테스트: '{sheet_name}'")
+        total_requirement = 0.0
+        found_in_products = []
+        
+        for brand, ratio in brand_ratios.items():
+            brand_production = production_ton * ratio
+            products = self.brand_products.get(brand, [])
+            
+            if not products:
+                continue
+            
+            material_ratios = []
+            
+            for product in products:
+                if product in self.bom_data:
+                    bom = self.bom_data[product]
+                    for item in bom:
+                        if item['원료코드'] == material_code:
+                            material_ratios.append(item['배합률'])
+                            found_in_products.append(product)
+                            break
+            
+            if material_ratios:
+                avg_ratio = np.mean(material_ratios) / 100
+                requirement = brand_production * avg_ratio * 1000
+                total_requirement += requirement
+        
+        return total_requirement if total_requirement > 0 else None
     
-    if df is None or len(df) == 0:
-        log_info("DataFrame이 비어있어서 처리할 수 없습니다.", level="warning")
-        return
+    def load_data(self, load_bom=True):
+        """Google Sheets에서 데이터 로드 (개선 버전)"""
+        try:
+            with st.spinner("📊 데이터 로딩 중 (Google Sheets)..."):
+                # 사용량 데이터
+                st.write("📄 사용량 시트 로딩...")
+                self.df_usage = self.sheets.read_sheet(SPREADSHEET_URLS['usage'], '사용량')
+                if self.df_usage is None or len(self.df_usage) == 0:
+                    st.error("❌ 사용량 시트가 비어있거나 읽을 수 없습니다.")
+                    return False
+                st.success(f"✅ 사용량: {len(self.df_usage)}개 원료")
+                
+                # 구매량 데이터
+                st.write("📄 구매량 시트 로딩...")
+                self.df_purchase = self.sheets.read_sheet(SPREADSHEET_URLS['usage'], '구매량')
+                if self.df_purchase is None:
+                    st.warning("⚠️ 구매량 시트를 읽을 수 없습니다.")
+                    self.df_purchase = pd.DataFrame()
+                else:
+                    st.success(f"✅ 구매량: {len(self.df_purchase)}개 원료")
+                
+                # 월별 생산량
+                st.write("📄 월별 생산량 시트 로딩...")
+                self.df_production = self.sheets.read_sheet(SPREADSHEET_URLS['usage'], '월별 생산량')
+                if self.df_production is None or len(self.df_production) == 0:
+                    st.warning("⚠️ 월별 생산량 시트를 읽을 수 없습니다. 기본값을 사용합니다.")
+                    self.df_production = pd.DataFrame()
+                else:
+                    st.success(f"✅ 월별 생산량: {len(self.df_production)}개 행")
+                
+                # 브랜드 비중
+                st.write("📄 브랜드 비중 시트 로딩...")
+                self.df_brand = self.sheets.read_sheet(SPREADSHEET_URLS['usage'], '브랜드 비중')
+                if self.df_brand is None or len(self.df_brand) == 0:
+                    st.warning("⚠️ 브랜드 비중 시트를 읽을 수 없습니다. 기본값을 사용합니다.")
+                    self.df_brand = pd.DataFrame()
+                else:
+                    st.success(f"✅ 브랜드 비중: {len(self.df_brand)}개 브랜드")
+                
+                # 재고 데이터
+                st.write("📄 재고현황 시트 로딩...")
+                self.df_inventory = self.sheets.read_sheet(SPREADSHEET_URLS['inventory'], '재고현황')
+                if self.df_inventory is None:
+                    st.warning("⚠️ 재고현황 시트를 읽을 수 없습니다.")
+                    self.df_inventory = pd.DataFrame()
+                else:
+                    st.success(f"✅ 재고현황: {len(self.df_inventory)}개 품목")
+                
+                # 데이터 타입 변환
+                st.write("🔄 데이터 타입 변환 중...")
+                self.convert_data_types()
+            
+            # 시계열 데이터 준비
+            st.write("📈 시계열 데이터 준비 중...")
+            self.prepare_time_series()
+            
+            # BOM 로드 (선택적)
+            if load_bom:
+                self.load_bom_data()
+            
+            st.success("✅ 모든 데이터 로드 완료!")
+            return True
+            
+        except Exception as e:
+            st.error(f"❌ 데이터 로드 실패: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
+            return False
     
-    try:
-        # 월 컬럼 찾기
-        log_info("월 컬럼 찾기...")
-        month_cols = [col for col in df.columns if '월' in col]
-        st.write(f"📅 발견된 월 컬럼: {month_cols}")
-        
-        if month_cols:
-            # 첫 번째 월 컬럼 샘플 데이터
-            sample_col = month_cols[0]
-            st.write(f"🔍 '{sample_col}' 컬럼 샘플 (처음 5개):")
-            st.write(df[sample_col].head())
+    def convert_data_types(self):
+        """데이터 타입 변환 (개선 버전 - 안전하게)"""
+        try:
+            # 사용량 데이터의 월 컬럼을 숫자로 변환
+            month_cols = [col for col in self.df_usage.columns if '월' in col]
             
-            # 숫자 변환 테스트
-            log_info(f"'{sample_col}' 숫자 변환 테스트...")
-            converted = pd.to_numeric(df[sample_col], errors='coerce')
+            for col in month_cols:
+                if col in self.df_usage.columns:
+                    # 각 셀에 safe_float 적용
+                    self.df_usage[col] = self.df_usage[col].apply(self.safe_float)
+                
+                if col in self.df_purchase.columns:
+                    self.df_purchase[col] = self.df_purchase[col].apply(self.safe_float)
             
-            st.write(f"✅ 변환 결과:")
-            st.write(f"- 변환 성공: {converted.notna().sum()}개")
-            st.write(f"- 변환 실패 (NaN): {converted.isna().sum()}개")
-            st.write(f"- 0이 아닌 값: {(converted > 0).sum()}개")
+            # 원료코드 변환
+            if '원료코드' in self.df_usage.columns:
+                self.df_usage['원료코드'] = self.df_usage['원료코드'].apply(
+                    lambda x: int(self.safe_float(x)) if self.safe_float(x) > 0 else 0
+                )
             
-            with st.expander("변환된 데이터 샘플"):
-                st.write(pd.DataFrame({
-                    '원본': df[sample_col].head(10),
-                    '변환후': converted.head(10)
-                }))
-        
-        # 특정 컬럼 찾기
-        log_info("주요 컬럼 확인...")
-        key_columns = ['원료코드', '품목코드', '품목명', '원료명']
-        found_columns = [col for col in key_columns if col in df.columns]
-        st.write(f"✅ 발견된 주요 컬럼: {found_columns}")
-        
-        if found_columns:
-            sample_col = found_columns[0]
-            st.write(f"🔍 '{sample_col}' 샘플:")
-            st.write(df[sample_col].head(10))
-        
-        # 빈 셀 확인
-        log_info("빈 셀 확인...")
-        total_cells = df.shape[0] * df.shape[1]
-        empty_cells = (df == '').sum().sum()
-        null_cells = df.isna().sum().sum()
-        
-        st.write(f"📊 데이터 품질:")
-        st.write(f"- 전체 셀: {total_cells:,}개")
-        st.write(f"- 빈 문자열: {empty_cells:,}개 ({empty_cells/total_cells*100:.1f}%)")
-        st.write(f"- NULL: {null_cells:,}개 ({null_cells/total_cells*100:.1f}%)")
-        
-    except Exception as e:
-        log_info(f"데이터 처리 테스트 실패: {str(e)}", level="error")
-        st.code(traceback.format_exc())
-
-def test_brand_ratio_processing(df_brand):
-    """브랜드 비중 데이터 처리 테스트"""
-    st.subheader("🏷️ 브랜드 비중 특별 테스트")
+            # 재고 데이터 변환
+            if len(self.df_inventory) > 0 and '품목코드' in self.df_inventory.columns:
+                self.df_inventory['품목코드'] = self.df_inventory['품목코드'].apply(
+                    lambda x: int(self.safe_float(x)) if self.safe_float(x) > 0 else 0
+                )
+                
+                for col in self.df_inventory.columns:
+                    if col not in ['품목코드', '품목명']:
+                        self.df_inventory[col] = self.df_inventory[col].apply(self.safe_float)
+            
+            st.success("✅ 데이터 타입 변환 완료!")
+            
+        except Exception as e:
+            st.warning(f"⚠️ 데이터 타입 변환 중 경고: {str(e)}")
+            pass
     
-    if df_brand is None or len(df_brand) == 0:
-        log_info("브랜드 비중 데이터가 없습니다.", level="warning")
-        return
+    def detect_month_columns(self, df):
+        """엑셀에서 실제 데이터가 있는 월 컬럼만 감지"""
+        month_names = ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월']
+        available_months = []
+        
+        for month in month_names:
+            if month in df.columns:
+                col_data = df[month]
+                valid_data = pd.to_numeric(col_data, errors='coerce').dropna()
+                
+                if len(valid_data) > 0 and valid_data.sum() > 0:
+                    available_months.append(month)
+                else:
+                    break
+        
+        return available_months
     
-    try:
-        log_info("브랜드 이름 찾기...")
-        brands = ['밥이보약', '더리얼', '기타']
+    def prepare_time_series(self):
+        """시계열 데이터 준비 (개선 버전 - 특수 형식 처리)"""
+        try:
+            self.available_months = self.detect_month_columns(self.df_usage)
+            num_months = len(self.available_months)
+            
+            if num_months == 0:
+                st.error("❌ 월 데이터를 찾을 수 없습니다.")
+                return
+            
+            self.months = pd.date_range(start='2025-01-01', periods=num_months, freq='MS')
+            self.num_months = num_months
+            
+            # 생산량 데이터 준비 (개선 버전)
+            default_prod = [345, 430, 554, 570, 522, 556, 606, 539, 580, 600, 620, 550]
+            production_values = []
+            
+            if len(self.df_production) > 0:
+                production_row = self.df_production.iloc[0]
+                
+                for i, col in enumerate(self.available_months):
+                    if col in self.df_production.columns:
+                        # safe_float가 "톤"을 제거해줌
+                        val = self.safe_float(production_row[col])
+                        if val > 0:
+                            production_values.append(val)
+                        else:
+                            production_values.append(default_prod[min(i, len(default_prod)-1)])
+                    else:
+                        production_values.append(default_prod[min(i, len(default_prod)-1)])
+            
+            # 기본값으로 채우기
+            if len(production_values) == 0:
+                production_values = default_prod[:num_months]
+            
+            while len(production_values) < num_months:
+                production_values.append(default_prod[min(len(production_values), len(default_prod)-1)])
+            
+            production_values = production_values[:num_months]
+            
+            self.production_ts = pd.DataFrame({
+                'ds': self.months,
+                'y': production_values
+            })
+            
+            st.success(f"✅ 생산량 데이터: {production_values[:3]}... (톤)")
+            
+            # 브랜드 비중 (개선 버전 - % 처리)
+            self.brand_ratios = {}
+            default_ratios = {'밥이보약': 0.65, '더리얼': 0.33, '기타': 0.02}
+            
+            for brand in ['밥이보약', '더리얼', '기타']:
+                ratios = []
+                
+                try:
+                    # 브랜드명으로 행 찾기 (더 안전하게)
+                    brand_row = None
+                    
+                    for idx, row in self.df_brand.iterrows():
+                        first_col = str(row.iloc[0]).strip()
+                        if first_col == brand:
+                            brand_row = row
+                            break
+                    
+                    if brand_row is not None:
+                        for col in self.available_months:
+                            if col in self.df_brand.columns:
+                                # safe_float가 "%"를 제거해줌
+                                val = self.safe_float(brand_row[col])
+                                
+                                # 값이 있으면 사용
+                                if val > 0:
+                                    # 이미 비율(0~1)인지 퍼센트(0~100)인지 확인
+                                    if val > 1:
+                                        ratios.append(val / 100)
+                                    else:
+                                        ratios.append(val)
+                                else:
+                                    ratios.append(default_ratios[brand])
+                            else:
+                                ratios.append(default_ratios[brand])
+                    else:
+                        st.warning(f"⚠️ '{brand}' 브랜드를 찾을 수 없어 기본값 사용")
+                        
+                except Exception as e:
+                    st.warning(f"⚠️ '{brand}' 비중 로드 실패: {str(e)}, 기본값 사용")
+                
+                # 기본값으로 채우기
+                if len(ratios) == 0:
+                    ratios = [default_ratios[brand]] * num_months
+                
+                while len(ratios) < num_months:
+                    ratios.append(default_ratios[brand])
+                
+                self.brand_ratios[brand] = ratios[:num_months]
+            
+            # 브랜드 비중 확인 메시지
+            st.success(f"✅ 브랜드 비중 (첫 달): 밥이보약 {self.brand_ratios['밥이보약'][0]*100:.0f}%, 더리얼 {self.brand_ratios['더리얼'][0]*100:.0f}%, 기타 {self.brand_ratios['기타'][0]*100:.0f}%")
+                
+        except Exception as e:
+            st.error(f"❌ 시계열 데이터 준비 실패: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
+            raise
+    
+    def safe_float(self, val):
+        """안전한 float 변환 (개선 버전 - 특수문자 처리)"""
+        try:
+            if pd.isna(val) or val is None or val == '':
+                return 0.0
+            
+            # 문자열로 변환
+            if not isinstance(val, str):
+                val = str(val)
+            
+            # 특수문자 제거: 톤, %, 쉼표, 공백 등
+            val = val.replace('톤', '').replace('%', '').replace(',', '').strip()
+            
+            # 빈 문자열이면 0 반환
+            if val == '':
+                return 0.0
+            
+            return float(val)
+        except:
+            return 0.0
+    
+    def classify_material(self, usage_values):
+        """원료 분류"""
+        avg = np.mean(usage_values) if usage_values else 0
+        cv = np.std(usage_values) / avg if avg > 0 else 0
         
-        st.write("🔍 첫 번째 컬럼 (브랜드명 예상):")
-        st.write(df_brand.iloc[:, 0].head(10))
+        if avg >= 50000 and cv < 0.2:
+            return '대량'
+        elif avg >= 5000:
+            return '중간'
+        else:
+            return '소량'
+    
+    def remove_outliers(self, values):
+        """IQR 방법으로 이상치 제거"""
+        if len(values) < 4:
+            return values
         
-        for brand in brands:
-            st.write(f"\n**'{brand}' 브랜드 찾기:**")
+        q1 = np.percentile(values, 25)
+        q3 = np.percentile(values, 75)
+        iqr = q3 - q1
+        
+        lower = q1 - 1.5 * iqr
+        upper = q3 + 1.5 * iqr
+        
+        return [np.median(values) if (v < lower or v > upper) else v for v in values]
+    
+    def calculate_trend(self, values):
+        """트렌드 계산"""
+        if len(values) < 2:
+            return values[-1] if values else 0
+        
+        if len(values) >= 3:
+            recent = values[-3:]
+            trend = recent[-1] + (recent[-1] - recent[0]) / 2
+        else:
+            trend = values[-1]
+        
+        weights = np.linspace(0.5, 1.5, len(values))
+        weights = weights / weights.sum()
+        weighted = np.average(values, weights=weights)
+        
+        return trend * 0.7 + weighted * 0.3
+    
+    def train_prophet_simple(self, data, material_type):
+        """단순화된 Prophet"""
+        try:
+            if len(data) < 2 or data['y'].sum() == 0:
+                return None
             
-            # 방법 1: 정확히 일치
-            exact_match = df_brand[df_brand.iloc[:, 0] == brand]
-            st.write(f"  - 정확히 일치: {len(exact_match)}개 행")
+            model = Prophet(
+                yearly_seasonality=False,
+                weekly_seasonality=False,
+                daily_seasonality=False,
+                changepoint_prior_scale=0.1 if material_type == '대량' else 0.15,
+                interval_width=self.hybrid_weights[material_type]['confidence_level'],
+                uncertainty_samples=50
+            )
             
-            # 방법 2: 문자열로 변환 후 일치
-            str_match = df_brand[df_brand.iloc[:, 0].astype(str) == brand]
-            st.write(f"  - 문자열 변환 후 일치: {len(str_match)}개 행")
+            if 'production' in data.columns and material_type != '소량':
+                model.add_regressor('production', standardize=True)
             
-            # 방법 3: 포함 여부
-            contains_match = df_brand[df_brand.iloc[:, 0].astype(str).str.contains(brand, na=False)]
-            st.write(f"  - 포함된 경우: {len(contains_match)}개 행")
+            model.fit(data)
+            return model
+        except:
+            return None
+    
+    def predict_material(self, material_code, material_name, usage_values, 
+                        next_month_production, brand_ratios):
+        """개별 원료 예측"""
+        try:
+            if sum(usage_values) == 0:
+                return 0, (0, 0), 'N/A'
             
-            if len(str_match) > 0:
-                st.success(f"✅ '{brand}' 발견!")
-                with st.expander(f"'{brand}' 데이터 보기"):
-                    st.write(str_match)
+            cleaned = self.remove_outliers(usage_values)
+            material_type = self.classify_material(cleaned)
+            weights = self.hybrid_weights[material_type]
+            
+            avg_prod = np.mean(self.production_ts['y'].values)
+            prod_ratio = next_month_production / avg_prod if avg_prod > 0 else 1
+            
+            historical_max = max(cleaned) if cleaned else 0
+            historical_avg = np.mean(cleaned) if cleaned else 0
+            
+            # BOM 예측
+            bom_pred = self.calculate_bom_requirement(material_code, next_month_production, brand_ratios)
+            
+            bom_safe = False
+            if bom_pred is not None and bom_pred > 0:
+                if historical_max > 0 and bom_pred > historical_max * 2:
+                    bom_pred = None
+                    bom_safe = False
+                else:
+                    bom_safe = True
+            
+            # Prophet 예측
+            prophet_pred = np.mean(cleaned[-3:]) * prod_ratio
+            try:
+                train_data = pd.DataFrame({
+                    'ds': self.months[:len(cleaned)],
+                    'y': cleaned,
+                    'production': self.production_ts['y'].values[:len(cleaned)]
+                })
+                
+                prophet_model = self.train_prophet_simple(train_data, material_type)
+                
+                if prophet_model:
+                    next_month_date = self.months[len(cleaned) - 1] + pd.DateOffset(months=1)
+                    future = pd.DataFrame({
+                        'ds': [next_month_date],
+                        'production': [next_month_production]
+                    })
+                    forecast = prophet_model.predict(future)
+                    prophet_pred = max(0, forecast['yhat'].values[0])
+            except:
+                pass
+            
+            # 트렌드 예측
+            trend_pred = self.calculate_trend(cleaned) * prod_ratio
+            
+            # 이동평균
+            ma_pred = np.mean(cleaned[-3:]) * prod_ratio
+            
+            # 하이브리드 앙상블
+            if bom_pred is not None and bom_pred > 0 and bom_safe:
+                final_pred = (
+                    bom_pred * weights['bom'] +
+                    prophet_pred * weights['prophet'] +
+                    trend_pred * weights['trend'] +
+                    ma_pred * weights['ma']
+                )
+                confidence = 'BOM+AI'
             else:
-                st.warning(f"⚠️ '{brand}'를 찾을 수 없습니다!")
+                total_weight = weights['prophet'] + weights['trend'] + weights['ma']
+                final_pred = (
+                    prophet_pred * (weights['prophet'] / total_weight) +
+                    trend_pred * (weights['trend'] / total_weight) +
+                    ma_pred * (weights['ma'] / total_weight)
+                )
+                confidence = 'AI only' if bom_pred is None else 'AI (BOM차단)'
+            
+            # 보정
+            if material_code in self.material_corrections:
+                final_pred *= self.material_corrections[material_code]
+            
+            # 브랜드 보정
+            if '닭' in str(material_name) or 'MDCM' in str(material_name):
+                final_pred *= (1 + (brand_ratios['밥이보약'] - 0.62) * 0.2)
+            elif '소고기' in str(material_name) or '연어' in str(material_name):
+                final_pred *= (1 + (brand_ratios['더리얼'] - 0.35) * 0.3)
+            
+            # 신뢰구간
+            margin = weights['base_margin']
+            lower = final_pred * (1 - margin)
+            upper = final_pred * (1 + margin)
+            
+            return final_pred, (lower, upper), confidence
+            
+        except:
+            return np.mean(usage_values[-3:]) if usage_values else 0, (0, 0), 'N/A'
+    
+    def get_inventory(self, material_code):
+        """재고 조회 (개선 버전)"""
+        try:
+            if len(self.df_inventory) == 0:
+                return 0
+            
+            # 원료코드를 문자열로 변환하여 비교
+            material_code_str = str(int(material_code)) if material_code > 0 else str(material_code)
+            
+            # 품목코드 컬럼에서 매칭
+            for idx, row in self.df_inventory.iterrows():
+                row_code = str(int(self.safe_float(row['품목코드']))) if '품목코드' in row.index else ''
+                
+                if row_code == material_code_str:
+                    # 마지막 유효한 재고값 찾기 (역순으로)
+                    for col in reversed(self.df_inventory.columns):
+                        if col not in ['품목코드', '품목명'] and col != '':
+                            val = self.safe_float(row[col])
+                            if val > 0:
+                                return val
+                    
+                    # 모든 컬럼 체크 (Unnamed 포함)
+                    for col in reversed(self.df_inventory.columns):
+                        if col not in ['품목코드', '품목명']:
+                            val = self.safe_float(row[col])
+                            if val > 0:
+                                return val
+        except Exception as e:
+            pass
         
-    except Exception as e:
-        log_info(f"브랜드 비중 테스트 실패: {str(e)}", level="error")
-        st.code(traceback.format_exc())
+        return 0
+    
+    def predict_all(self, next_month_production, brand_ratios):
+        """전체 예측 (개선 버전)"""
+        results = []
+        total = len(self.df_usage)
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        time_text = st.empty()
+        
+        start_time = time.time()
+        
+        for idx, row in self.df_usage.iterrows():
+            progress = (idx + 1) / total
+            progress_bar.progress(progress)
+            status_text.text(f'예측 중... {idx + 1}/{total} ({progress*100:.1f}%)')
+            
+            if idx > 0 and idx % 10 == 0:
+                elapsed = time.time() - start_time
+                eta = elapsed / (idx + 1) * (total - idx - 1)
+                time_text.text(f'예상 남은 시간: {eta:.0f}초')
+            
+            try:
+                # 원료코드 안전하게 변환
+                material_code = int(self.safe_float(row['원료코드']))
+                if material_code == 0:
+                    continue
+            except:
+                continue
+                
+            material_name = str(row['품목명']) if '품목명' in row.index else 'Unknown'
+            
+            usage_values = []
+            for col in self.available_months:
+                if col in row.index:
+                    usage_values.append(self.safe_float(row[col]))
+            
+            # 모든 값이 0이면 스킵
+            if sum(usage_values) == 0:
+                continue
+            
+            usage_pred, (lower, upper), confidence = self.predict_material(
+                material_code, material_name, usage_values,
+                next_month_production, brand_ratios
+            )
+            
+            inventory = self.get_inventory(material_code)
+            safety_stock = usage_pred * 0.15
+            purchase = max(0, usage_pred - inventory + safety_stock)
+            
+            category = self.classify_material(usage_values)
+            
+            range_width = ((upper - lower) / usage_pred * 100) if usage_pred > 0 else 0
+            
+            results.append({
+                '원료코드': material_code,
+                '품목명': material_name,
+                '예측_사용량': round(usage_pred, 2),
+                '사용량_하한': round(lower, 2),
+                '사용량_상한': round(upper, 2),
+                '신뢰구간_폭': f"±{range_width/2:.1f}%",
+                '예측_구매량': round(purchase, 2),
+                '현재_재고': round(inventory, 2),
+                '원료_분류': category,
+                '예측_방식': confidence
+            })
+        
+        progress_bar.empty()
+        status_text.empty()
+        time_text.empty()
+        
+        total_time = time.time() - start_time
+        st.success(f"✅ 예측 완료! (소요시간: {total_time:.1f}초)")
+        
+        return pd.DataFrame(results)
+
+def create_charts(df):
+    """차트 생성"""
+    # 1. 원료 분류 분포
+    fig_pie = px.pie(
+        df['원료_분류'].value_counts().reset_index(),
+        values='count',
+        names='원료_분류',
+        title="원료 분류별 분포",
+        color_discrete_map={'대량': '#1f77b4', '중간': '#ff7f0e', '소량': '#2ca02c'}
+    )
+    
+    # 2. TOP 10 사용량
+    top10 = df.nlargest(10, '예측_사용량')
+    fig_bar = px.bar(
+        top10,
+        x='예측_사용량',
+        y='품목명',
+        orientation='h',
+        title="TOP 10 예측 사용량",
+        color='원료_분류',
+        text='예측_사용량'
+    )
+    fig_bar.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
+    fig_bar.update_layout(yaxis={'categoryorder': 'total ascending'})
+    
+    # 3. 예측 방식 분포
+    if '예측_방식' in df.columns:
+        fig_method = px.pie(
+            df['예측_방식'].value_counts().reset_index(),
+            values='count',
+            names='예측_방식',
+            title="예측 방식 분포",
+            color_discrete_map={
+                'BOM+AI': '#28a753', 
+                'AI only': '#ffc107',
+                'AI (BOM차단)': '#dc3545'
+            }
+        )
+    else:
+        fig_method = None
+    
+    return fig_pie, fig_bar, fig_method
+
+def get_download_link(df):
+    """다운로드 링크 생성"""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name='예측결과', index=False)
+    
+    output.seek(0)
+    b64 = base64.b64encode(output.read()).decode()
+    return f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="예측결과_v7.1_sheets.xlsx">📥 엑셀 다운로드</a>'
 
 def main():
-    """메인 디버깅 함수"""
+    """메인 애플리케이션"""
     
-    st.sidebar.header("🔐 인증")
-    credentials_file = st.sidebar.file_uploader(
-        "서비스 계정 JSON 키",
-        type=['json']
-    )
+    # 헤더
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.title("🎯 원료 예측 시스템 v7.1")
+        st.markdown("**Google Sheets 연동 버전** (Prophet 65% + BOM 15%)")
+    with col2:
+        st.markdown("""
+        <div class="success-box">
+        <span class="google-sheets-badge">Google Sheets</span><br>
+        <b>v7.1 특징</b><br>
+        • 🛡️ 안전장치<br>
+        • ☁️ 클라우드 연동<br>
+        • 📊 실시간 데이터
+        </div>
+        """, unsafe_allow_html=True)
     
-    if not credentials_file:
-        st.info("👈 좌측에서 JSON 키 파일을 업로드하세요")
-        return
-    
-    # 1단계: 연결 테스트
-    credentials_content = credentials_file.read()
-    client = test_google_sheets_connection(credentials_content)
-    
-    if not client:
-        st.error("❌ Google Sheets 연결에 실패했습니다. 위의 오류를 확인하세요.")
-        return
-    
-    st.markdown("---")
-    
-    # 2단계: 스프레드시트 선택
-    st.sidebar.header("📊 테스트할 스프레드시트")
-    test_target = st.sidebar.radio(
-        "선택:",
-        ["사용량/구매량", "재고현황", "BOM"]
-    )
-    
-    # 선택에 따라 테스트
-    if test_target == "사용량/구매량":
-        spreadsheet, sheet_titles = test_read_spreadsheet(
-            client, 
-            SPREADSHEET_URLS['usage'],
-            "사용량/구매량 예측모델"
+    # 사이드바
+    with st.sidebar:
+        st.header("⚙️ 설정")
+        
+        # Google Sheets 인증
+        st.subheader("🔐 Google Sheets 인증")
+        
+        credentials_file = st.file_uploader(
+            "서비스 계정 JSON 키 파일",
+            type=['json'],
+            help="Google Cloud Console에서 생성한 서비스 계정 JSON 키"
         )
         
-        if spreadsheet:
-            st.markdown("---")
+        if credentials_file:
+            # 연결 상태 확인
+            if 'sheets_connector' not in st.session_state:
+                st.session_state.sheets_connector = GoogleSheetsConnector()
             
-            # 각 시트 테스트
-            required_sheets = ['사용량', '구매량', '월별 생산량', '브랜드 비중']
+            sheets = st.session_state.sheets_connector
             
-            for sheet_name in required_sheets:
-                if sheet_name in sheet_titles:
-                    df = test_read_worksheet(spreadsheet, sheet_name)
-                    
-                    if df is not None:
-                        test_data_processing(df, sheet_name)
-                        
-                        # 브랜드 비중은 특별 테스트
-                        if sheet_name == '브랜드 비중':
-                            st.markdown("---")
-                            test_brand_ratio_processing(df)
-                    
-                    st.markdown("---")
+            if not sheets.connected:
+                credentials_content = credentials_file.read()
+                if sheets.connect(credentials_content):
+                    st.success("✅ Google Sheets 연결 성공!")
                 else:
-                    st.error(f"❌ 필수 시트 '{sheet_name}'을 찾을 수 없습니다!")
-                    st.write(f"📋 사용 가능한 시트: {sheet_titles}")
-    
-    elif test_target == "재고현황":
-        spreadsheet, sheet_titles = test_read_spreadsheet(
-            client,
-            SPREADSHEET_URLS['inventory'],
-            "월별 기초재고 및 기말재고"
+                    st.error("❌ 연결 실패")
+                    return
+            else:
+                st.success("✅ Google Sheets 연결됨")
+        else:
+            st.info("💡 JSON 키 파일을 업로드하세요")
+            
+            with st.expander("📝 JSON 키 생성 방법"):
+                st.markdown("""
+                1. [Google Cloud Console](https://console.cloud.google.com/) 접속
+                2. 프로젝트 생성 또는 선택
+                3. **API 및 서비스 > 사용 설정된 API 및 서비스**
+                4. "**Google Sheets API**" 및 "**Google Drive API**" 검색 후 사용 설정
+                5. **API 및 서비스 > 사용자 인증 정보**
+                6. **사용자 인증 정보 만들기 > 서비스 계정**
+                7. 서비스 계정 생성 후 **키 추가 > JSON** 선택
+                8. 다운로드된 JSON 파일을 여기에 업로드
+                
+                **중요:** 서비스 계정 이메일에 스프레드시트 편집 권한 부여!
+                """)
+            return
+        
+        st.markdown("---")
+        
+        # BOM 사용 여부
+        use_bom = st.checkbox("BOM 데이터 사용", value=True, help="참고용으로 활용 (15%)")
+        
+        st.markdown("---")
+        
+        # 예측 조건
+        st.subheader("📝 예측 조건")
+        
+        production = st.number_input(
+            "생산 계획 (톤)",
+            min_value=100.0,
+            max_value=1000.0,
+            value=600.0,
+            step=10.0
         )
         
-        if spreadsheet and '재고현황' in sheet_titles:
-            st.markdown("---")
-            df = test_read_worksheet(spreadsheet, '재고현황')
-            
-            if df is not None:
-                test_data_processing(df, '재고현황')
-    
-    elif test_target == "BOM":
-        spreadsheet, sheet_titles = test_read_spreadsheet(
-            client,
-            SPREADSHEET_URLS['bom'],
-            "BOM 신뢰성 추가"
+        st.markdown("**브랜드 비중 (%)**")
+        col1, col2 = st.columns(2)
+        with col1:
+            bob = st.slider("밥이보약", 0, 100, 60, 1)
+        with col2:
+            real = st.slider("더리얼", 0, 100, 35, 1)
+        
+        etc = 100 - bob - real
+        if etc < 0:
+            st.error("비중 합이 100%를 초과!")
+            return
+        
+        st.metric("기타", f"{etc}%")
+        
+        brand_ratios = {
+            '밥이보약': bob/100,
+            '더리얼': real/100,
+            '기타': etc/100
+        }
+        
+        st.markdown("---")
+        
+        # 실행 버튼
+        predict_btn = st.button(
+            "🔮 예측 실행",
+            type="primary",
+            use_container_width=True,
+            disabled=(credentials_file is None)
         )
         
-        if spreadsheet and '제품 BOM' in sheet_titles:
-            st.markdown("---")
-            df = test_read_worksheet(spreadsheet, '제품 BOM')
+        # 스프레드시트 정보
+        with st.expander("📊 연동된 스프레드시트"):
+            st.markdown("""
+            **사용량/구매량 데이터**
+            - ID: `1lBanCoyOxv71LmXT316mO4XRccMyv5ETKcTcvm8wfvI`
+            - 시트: 사용량, 구매량, 월별 생산량, 브랜드 비중
             
-            if df is not None:
-                st.subheader("🔧 BOM 구조 분석")
+            **재고 데이터**
+            - ID: `1k0_QxRBetfP8dFhHH5J478aFPvoMDvn_OPj1428CAzw`
+            - 시트: 재고현황
+            
+            **BOM 데이터**
+            - ID: `1vdkYQ9tQzuj_juXZPhgEsDdhAXGWqtCejXLZHXNsAws`
+            - 시트: 제품 BOM
+            """)
+        
+        # 모델 정보
+        with st.expander("📊 모델 정보"):
+            st.markdown("""
+            **v7.1 하이브리드 구성**
+            
+            BOM 안전할 때:
+            - Prophet: 60-65% ⭐
+            - BOM: 10-15%
+            - 트렌드: 15-20%
+            - 이동평균: 5-10%
+            
+            BOM 불안전할 때:
+            - Prophet: 73%
+            - 트렌드: 18%
+            - 이동평균: 9%
+            - BOM: 차단! 🛡️
+            
+            **Google Sheets 연동 장점**
+            - ☁️ 실시간 데이터 동기화
+            - 👥 팀 협업 용이
+            - 📱 어디서나 접근 가능
+            - 🔄 자동 백업
+            """)
+    
+    # 메인 영역
+    if credentials_file and 'sheets_connector' in st.session_state:
+        sheets = st.session_state.sheets_connector
+        
+        if sheets.connected:
+            # 모델 초기화
+            if 'model' not in st.session_state or st.session_state.get('model_sheets') != sheets:
+                st.session_state.model = BOMHybridModel(sheets)
+                st.session_state.model_sheets = sheets
+            
+            model = st.session_state.model
+            
+            # 데이터 로드
+            if model.load_data(load_bom=use_bom):
+                # 정보 표시
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("원료 수", f"{len(model.df_usage):,}")
+                with col2:
+                    st.metric("데이터 기간", f"1-{model.num_months}월")
+                with col3:
+                    st.metric("생산 계획", f"{production:.0f}톤")
+                with col4:
+                    if model.bom_available:
+                        st.metric("BOM 제품", f"{len(model.bom_data)}개", delta="통합됨", delta_color="normal")
+                    else:
+                        st.metric("BOM 상태", "미사용", delta="기존방식", delta_color="off")
                 
-                st.write("🔍 BOM 데이터는 특별한 구조를 가지고 있어요:")
-                st.write("- 제품명 행: 첫 번째 셀만 값이 있음")
-                st.write("- 원료 행: ERP 코드, 원료명, 배합률")
-                
-                # 첫 20행 구조 분석
-                with st.expander("처음 20행 구조 분석"):
-                    for idx in range(min(20, len(df))):
-                        row = df.iloc[idx]
-                        filled_cells = sum(1 for val in row if val and val != '')
+                if predict_btn:
+                    st.markdown("---")
+                    st.header("📈 예측 결과")
+                    
+                    # 예측 실행
+                    with st.container():
+                        predictions = model.predict_all(production, brand_ratios)
+                    
+                    if predictions is not None and not predictions.empty:
+                        # 요약
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("총 예측 사용량", f"{predictions['예측_사용량'].sum():,.0f}")
+                        with col2:
+                            st.metric("총 예측 구매량", f"{predictions['예측_구매량'].sum():,.0f}")
+                        with col3:
+                            avg_range = predictions['신뢰구간_폭'].apply(
+                                lambda x: float(x.replace('±', '').replace('%', ''))
+                            ).mean()
+                            st.metric("평균 신뢰구간", f"±{avg_range:.1f}%")
+                        with col4:
+                            if model.bom_available:
+                                bom_count = len(predictions[predictions['예측_방식']=='BOM+AI'])
+                                st.metric("BOM 적용", f"{bom_count}개", delta=f"{bom_count/len(predictions)*100:.0f}%")
+                            else:
+                                st.metric("예측 방식", "AI only")
                         
-                        if filled_cells == 1:
-                            st.success(f"행 {idx+1}: 제품명 행 → '{row.iloc[0]}'")
-                        elif filled_cells >= 3:
-                            st.info(f"행 {idx+1}: 원료 행 → ERP:{row.iloc[0]}, 원료:{row.iloc[1]}, 배합률:{row.iloc[2]}")
-                        else:
-                            st.write(f"행 {idx+1}: {filled_cells}개 셀 채워짐")
-    
-    # 종합 요약
-    st.markdown("---")
-    st.header("📝 디버깅 요약")
-    
-    st.info("""
-    **다음 정보를 확인하세요:**
-    
-    1. ✅ **서비스 계정 이메일**이 모든 스프레드시트에 공유되어 있나요?
-    2. ✅ **시트 이름**이 정확히 일치하나요? (공백, 대소문자 주의)
-    3. ✅ **데이터 형식**이 올바른가요? (숫자는 숫자로, 텍스트는 텍스트로)
-    4. ✅ **빈 셀**이 너무 많지 않나요?
-    5. ✅ **월 컬럼**이 "1월", "2월" 형식인가요?
-    
-    위에서 발견된 문제를 수정하고 다시 테스트하세요!
-    """)
+                        # 탭
+                        tab1, tab2, tab3, tab4 = st.tabs(
+                            ["📊 차트", "📋 데이터", "🎯 TOP 20", "📥 다운로드"]
+                        )
+                        
+                        with tab1:
+                            fig_pie, fig_bar, fig_method = create_charts(predictions)
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.plotly_chart(fig_pie, use_container_width=True)
+                            with col2:
+                                if fig_method:
+                                    st.plotly_chart(fig_method, use_container_width=True)
+                            
+                            st.plotly_chart(fig_bar, use_container_width=True)
+                        
+                        with tab2:
+                            # 필터
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                categories = st.multiselect(
+                                    "분류 필터",
+                                    ['대량', '중간', '소량'],
+                                    ['대량', '중간', '소량']
+                                )
+                            with col2:
+                                if model.bom_available:
+                                    methods = st.multiselect(
+                                        "예측 방식",
+                                        ['BOM+AI', 'AI only', 'AI (BOM차단)'],
+                                        ['BOM+AI', 'AI only', 'AI (BOM차단)']
+                                    )
+                                else:
+                                    methods = ['AI only']
+                            with col3:
+                                search = st.text_input("원료명 검색")
+                            
+                            # 필터링
+                            filtered = predictions[predictions['원료_분류'].isin(categories)]
+                            if model.bom_available:
+                                filtered = filtered[filtered['예측_방식'].isin(methods)]
+                            if search:
+                                filtered = filtered[
+                                    filtered['품목명'].str.contains(search, case=False, na=False)
+                                ]
+                            
+                            st.dataframe(filtered, use_container_width=True, height=400)
+                            st.caption(f"총 {len(filtered)}개 원료")
+                        
+                        with tab3:
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.subheader("🔝 사용량 TOP 20")
+                                display_cols = ['품목명', '예측_사용량', '신뢰구간_폭', '원료_분류']
+                                if model.bom_available:
+                                    display_cols.append('예측_방식')
+                                top20_usage = predictions.nlargest(20, '예측_사용량')[display_cols]
+                                st.dataframe(top20_usage, use_container_width=True)
+                            
+                            with col2:
+                                st.subheader("🛒 구매량 TOP 20")
+                                display_cols = ['품목명', '예측_구매량', '현재_재고', '원료_분류']
+                                if model.bom_available:
+                                    display_cols.append('예측_방식')
+                                top20_purchase = predictions.nlargest(20, '예측_구매량')[display_cols]
+                                st.dataframe(top20_purchase, use_container_width=True)
+                        
+                        with tab4:
+                            st.subheader("📥 결과 다운로드")
+                            
+                            # 엑셀 다운로드
+                            st.markdown(get_download_link(predictions), unsafe_allow_html=True)
+                            
+                            # CSV 다운로드
+                            csv = predictions.to_csv(index=False, encoding='utf-8-sig')
+                            st.download_button(
+                                "📄 CSV 다운로드",
+                                csv,
+                                "predictions_v7.1_sheets.csv",
+                                "text/csv"
+                            )
+                            
+                            # 요약 정보
+                            bom_status = f"BOM 통합 ({len(model.bom_data)}개 제품)" if model.bom_available else "BOM 미사용"
+                            blocked_count = len(predictions[predictions['예측_방식']=='AI (BOM차단)']) if model.bom_available else 0
+                            st.info(f"""
+                            **파일 정보**
+                            - 원료: {len(predictions)}개
+                            - 데이터 기간: 1-{model.num_months}월
+                            - 모델: v7.1 하이브리드 (Google Sheets)
+                            - BOM: {bom_status}
+                            - 안전장치 작동: {blocked_count}개 원료
+                            - 평균 신뢰구간: ±{avg_range:.1f}%
+                            - 생성: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+                            """)
+    else:
+        # 초기 화면
+        st.info("👈 좌측 사이드바에서 Google Sheets 인증을 진행하세요")
+        
+        with st.expander("🚀 Google Sheets 연동 버전", expanded=True):
+            st.markdown("""
+            ### ☁️ 클라우드 기반 예측 시스템
+            
+            **Google Sheets 연동 장점**
+            - 📊 실시간 데이터 동기화
+            - 👥 팀원과 함께 데이터 관리
+            - 📱 언제 어디서나 접근 가능
+            - 🔄 자동 버전 관리 및 백업
+            - 💾 파일 업로드 불필요
+            
+            **사용 방법**
+            1. Google Cloud Console에서 서비스 계정 생성
+            2. Google Sheets API, Drive API 활성화
+            3. JSON 키 파일 다운로드
+            4. 스프레드시트에 서비스 계정 이메일 공유 권한 부여
+            5. JSON 키 파일 업로드
+            6. 예측 실행!
+            
+            **연동된 스프레드시트**
+            - ✅ 사용량 및 구매량 예측모델
+            - ✅ 월별 기초재고 및 기말재고
+            - ✅ BOM 신뢰성 추가 (선택)
+            
+            **v7.1 핵심 기능**
+            - 🛡️ BOM 안전장치 (과대예측 방지)
+            - 📊 Prophet 65% 강화
+            - 🤖 자동 브랜드 인식
+            - 🎯 3가지 예측 방식
+            """)
+        
+        st.success("""
+        💡 **시작하기**
+        1. 왼쪽 사이드바에서 JSON 키 파일 업로드
+        2. Google Sheets 연결 확인
+        3. 생산 계획 및 브랜드 비중 입력
+        4. 🔮 예측 실행 버튼 클릭!
+        """)
 
 if __name__ == "__main__":
     main()
