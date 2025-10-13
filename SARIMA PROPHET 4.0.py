@@ -80,7 +80,7 @@ def get_gspread_client():
         st.error(f"❌ 서비스 계정 인증 실패: {str(e)}")
         return None
 
-def read_google_sheet(sheet_id, sheet_name):
+def read_google_sheet(sheet_id, sheet_name, use_header=True):
     """Google Sheets에서 데이터 읽기"""
     try:
         client = get_gspread_client()
@@ -92,7 +92,12 @@ def read_google_sheet(sheet_id, sheet_name):
         data = worksheet.get_all_values()
         
         if len(data) > 0:
-            df = pd.DataFrame(data[1:], columns=data[0])
+            if use_header and len(data) > 1:
+                # 첫 행을 헤더로 사용
+                df = pd.DataFrame(data[1:], columns=data[0])
+            else:
+                # 헤더 없이 모든 데이터 가져오기 (BOM용)
+                df = pd.DataFrame(data)
             return df
         else:
             return None
@@ -134,33 +139,36 @@ class BOMHybridModel:
         """BOM 데이터 로드"""
         try:
             with st.spinner("📦 BOM 데이터 로딩 중..."):
-                df_raw = read_google_sheet(sheet_id, '제품 BOM')
+                # 헤더 없이 로드 (BOM 시트는 제품명이 첫 행)
+                df_raw = read_google_sheet(sheet_id, '제품 BOM', use_header=False)
                 if df_raw is None:
                     self.bom_available = False
                     return False
                 
-                # 디버깅: 데이터 구조 확인
+                # 디버깅: 데이터 구조 확인 (컬럼명 문제 해결)
                 st.write("🔍 BOM 데이터 미리보기 (처음 10행):")
-                st.dataframe(df_raw.head(10))
+                df_preview = df_raw.head(10).copy()
+                df_preview.columns = [f'컬럼{i}' for i in range(len(df_preview.columns))]
+                st.dataframe(df_preview)
                 
                 current_product = None
                 for idx, row in df_raw.iterrows():
                     # 첫 번째 컬럼 값 확인
                     first_col = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ''
-                    second_col = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) and len(row) > 1 else ''
-                    third_col = str(row.iloc[2]).strip() if pd.notna(row.iloc[2]) and len(row) > 2 else ''
+                    second_col = str(row.iloc[1]).strip() if len(row) > 1 and pd.notna(row.iloc[1]) else ''
+                    third_col = str(row.iloc[2]).strip() if len(row) > 2 and pd.notna(row.iloc[2]) else ''
                     
-                    # 제품명 행 (첫 번째 컬럼만 값이 있고, 두 번째가 비어있거나 헤더가 아님)
-                    if first_col and (not second_col or second_col == ''):
+                    # 제품명 행 (첫 번째 컬럼만 값이 있고, 두 번째가 비어있음)
+                    if first_col and not second_col:
                         current_product = first_col
                         self.bom_data[current_product] = []
                         st.write(f"✅ 제품 발견: {current_product}")
                     
                     # 헤더 행 스킵
-                    elif first_col in ['ERP 코드', 'ERP코드', '원료코드']:
+                    elif first_col.lower() in ['erp 코드', 'erp코드', '원료코드', '품목코드']:
                         continue
                     
-                    # 원료 행
+                    # 원료 행 (3개 컬럼 모두 값이 있음)
                     elif first_col and second_col and third_col and current_product:
                         try:
                             # 원료코드가 숫자인지 확인
@@ -173,7 +181,7 @@ class BOMHybridModel:
                                 '원료명': material_name,
                                 '배합률': ratio
                             })
-                        except (ValueError, TypeError) as e:
+                        except (ValueError, TypeError):
                             # 숫자 변환 실패 시 스킵
                             continue
                 
@@ -187,11 +195,20 @@ class BOMHybridModel:
                 
                 if self.bom_available:
                     brand_summary = {brand: len(products) for brand, products in self.brand_products.items()}
-                    st.success(f"✅ BOM 데이터 로드 완료!\n- 총 {len(self.bom_data)}개 제품\n- 밥이보약: {brand_summary['밥이보약']}개\n- 더리얼: {brand_summary['더리얼']}개\n- 기타: {brand_summary['기타']}개")
+                    total_materials = sum(len(items) for items in self.bom_data.values())
+                    st.success(f"""
+                    ✅ BOM 데이터 로드 완료!
+                    - 총 {len(self.bom_data)}개 제품
+                    - 총 {total_materials}개 원료 매핑
+                    - 밥이보약: {brand_summary['밥이보약']}개 제품
+                    - 더리얼: {brand_summary['더리얼']}개 제품
+                    - 기타: {brand_summary['기타']}개 제품
+                    """)
                     return True
                 else:
                     st.warning(f"⚠️ BOM 데이터가 비어있습니다. 파싱된 제품 수: {len(self.bom_data)}")
                     return False
+                    
         except Exception as e:
             st.error(f"⚠️ BOM 데이터 로드 실패: {str(e)}")
             import traceback
@@ -697,9 +714,9 @@ def main():
         st.markdown("**브랜드 비중 (%)**")
         col1, col2 = st.columns(2)
         with col1:
-            bob = st.slider("밥이보약", 0, 100, 60, 1)
+            bob = st.slider("밥이보약", 0, 100, 60, 5)
         with col2:
-            real = st.slider("더리얼", 0, 100, 35, 1)
+            real = st.slider("더리얼", 0, 100, 35, 5)
         
         etc = 100 - bob - real
         if etc < 0:
