@@ -186,6 +186,194 @@ class StreamlitProphetTrendModel:
             ratios = []
             
             try:
+                brand_row = self.df_brand[self.df_brand.iloc[:, 0] == brand]"""
+Prophet + 트렌드 최적화 모델 v6.0 - Streamlit 앱
+SARIMA 제거로 더 빠르고 안정적인 예측
+실행: streamlit run app.py
+"""
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+from prophet import Prophet
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import warnings
+from datetime import datetime
+import io
+import base64
+import time
+warnings.filterwarnings('ignore')
+
+# 페이지 설정
+st.set_page_config(
+    page_title="원료 예측 시스템 v6.0",
+    page_icon="🚀",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# CSS 스타일
+st.markdown("""
+<style>
+    .main {
+        padding: 0rem 1rem;
+    }
+    .metric-container {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 0.5rem 0;
+    }
+    h1 {
+        color: #1f77b4;
+    }
+    .success-box {
+        background-color: #d4edda;
+        border: 1px solid #c3e6cb;
+        border-radius: 0.25rem;
+        padding: 0.75rem;
+        margin: 1rem 0;
+    }
+    .info-box {
+        background-color: #d1ecf1;
+        border: 1px solid #bee5eb;
+        border-radius: 0.25rem;
+        padding: 0.75rem;
+        margin: 1rem 0;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+class StreamlitProphetTrendModel:
+    """Streamlit용 Prophet + 트렌드 모델 v6.0"""
+    
+    def __init__(self):
+        """모델 초기화"""
+        # 단순화된 가중치 (SARIMA 제거)
+        self.simplified_weights = {
+            '대량': {
+                'prophet': 0.60,
+                'trend': 0.25,
+                'ma': 0.10,
+                'exp_smooth': 0.05,
+                'confidence_level': 0.90,
+                'base_margin': 0.08
+            },
+            '중간': {
+                'prophet': 0.45,
+                'trend': 0.30,
+                'ma': 0.15,
+                'exp_smooth': 0.10,
+                'confidence_level': 0.85,
+                'base_margin': 0.15
+            },
+            '소량': {
+                'prophet': 0.35,
+                'trend': 0.35,
+                'ma': 0.20,
+                'exp_smooth': 0.10,
+                'confidence_level': 0.80,
+                'base_margin': 0.25
+            }
+        }
+        
+        # 검증된 보정계수
+        self.material_corrections = {
+            1010101: 1.00,   # 닭고기 MDCM
+            1030501: 0.95,   # 콘그릿츠
+            1050801: 1.00,   # 녹색 완두
+            1010301: 0.73,   # 소고기 분쇄육
+            1010401: 0.70,   # 연어
+            1010201: 0.90,   # 오리고기
+        }
+    
+    def load_data(self, usage_file, inventory_file):
+        """데이터 로드"""
+        try:
+            with st.spinner("📊 데이터 로딩 중..."):
+                self.df_usage = pd.read_excel(usage_file, sheet_name='사용량')
+                self.df_purchase = pd.read_excel(usage_file, sheet_name='구매량')
+                self.df_production = pd.read_excel(usage_file, sheet_name='월별 생산량')
+                self.df_brand = pd.read_excel(usage_file, sheet_name='브랜드 비중')
+                self.df_inventory = pd.read_excel(inventory_file, sheet_name='재고현황')
+            
+            self.prepare_time_series()
+            return True
+        except Exception as e:
+            st.error(f"❌ 데이터 로드 실패: {str(e)}")
+            return False
+    
+    def detect_month_columns(self, df):
+        """엑셀에서 월 컬럼 자동 감지"""
+        month_names = ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월']
+        available_months = [m for m in month_names if m in df.columns]
+        return available_months
+    
+    def prepare_time_series(self):
+        """시계열 데이터 준비"""
+        # 사용 가능한 월 자동 감지
+        self.available_months = self.detect_month_columns(self.df_usage)
+        num_months = len(self.available_months)
+        
+        if num_months == 0:
+            st.error("❌ 월 데이터를 찾을 수 없습니다. (1월, 2월, ... 형식 필요)")
+            return
+        
+        # 동적으로 날짜 범위 생성
+        self.months = pd.date_range(start='2025-01-01', periods=num_months, freq='MS')
+        self.num_months = num_months
+        
+        # 기본값 (12개월 분량)
+        default_prod = [345, 430, 554, 570, 522, 556, 606, 539, 580, 600, 620, 550]
+        
+        # 생산량 데이터 - 정확히 num_months 길이로 맞추기
+        production_values = []
+        
+        if len(self.df_production) > 0:
+            production_row = self.df_production.iloc[0]
+            
+            for i, col in enumerate(self.available_months):
+                if col in self.df_production.columns:
+                    try:
+                        val = production_row[col]
+                        if isinstance(val, str) and '톤' in val:
+                            production_values.append(float(val.replace('톤', '').strip()))
+                        elif pd.notna(val) and val != 0:
+                            production_values.append(float(val))
+                        else:
+                            # 값이 없으면 기본값 사용
+                            production_values.append(default_prod[i])
+                    except:
+                        production_values.append(default_prod[i])
+                else:
+                    production_values.append(default_prod[i])
+        
+        # 여전히 비어있으면 기본값 사용
+        if len(production_values) == 0:
+            production_values = default_prod[:num_months]
+        
+        # 길이를 정확히 맞추기
+        while len(production_values) < num_months:
+            production_values.append(default_prod[len(production_values)])
+        
+        production_values = production_values[:num_months]
+        
+        # DataFrame 생성
+        self.production_ts = pd.DataFrame({
+            'ds': self.months,
+            'y': production_values
+        })
+        
+        # 브랜드 비중 - 정확히 num_months 길이로 맞추기
+        self.brand_ratios = {}
+        default_ratios = {'밥이보약': 0.65, '더리얼': 0.33, '기타': 0.02}
+        
+        for brand in ['밥이보약', '더리얼', '기타']:
+            ratios = []
+            
+            try:
                 brand_row = self.df_brand[self.df_brand.iloc[:, 0] == brand]
                 
                 if not brand_row.empty:
@@ -414,9 +602,9 @@ class StreamlitProphetTrendModel:
             material_code = row['원료코드']
             material_name = row['품목명']
             
-            # 사용량 데이터
+            # 사용량 데이터 (동적으로 읽기)
             usage_values = []
-            for col in ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월']:
+            for col in self.available_months:
                 if col in row.index:
                     usage_values.append(self.safe_float(row[col]))
             
@@ -521,7 +709,8 @@ def main():
         <b>v6.0 특징</b><br>
         • 더 빠른 예측<br>
         • 더 안정적<br>
-        • SARIMA 없음
+        • SARIMA 없음<br>
+        • 자동 월 감지
         </div>
         """, unsafe_allow_html=True)
     
@@ -598,6 +787,7 @@ def main():
             - SARIMA 제거로 40% 빠름
             - 100% 안정적 예측
             - 오차율 14-16%
+            - 1~12월 자동 감지
             """)
     
     # 메인 영역
@@ -615,7 +805,7 @@ def main():
             with col1:
                 st.metric("원료 수", f"{len(model.df_usage):,}")
             with col2:
-                st.metric("데이터 기간", "2년")
+                st.metric("데이터 기간", f"1-{model.num_months}월")
             with col3:
                 st.metric("생산 계획", f"{production:.0f}톤")
             with col4:
@@ -720,6 +910,7 @@ def main():
                         st.info(f"""
                         **파일 정보**
                         - 원료: {len(predictions)}개
+                        - 데이터 기간: 1-{model.num_months}월
                         - 모델: Prophet + 트렌드 (v6.0)
                         - SARIMA: 제거됨
                         - 평균 신뢰구간: ±{avg_range:.1f}%
@@ -748,11 +939,21 @@ def main():
             **4. 정확도 유지 🎯**
             - 평균 오차: 14-16%
             - 신뢰구간: ±8-15%
+            
+            **5. 자동 데이터 인식 🔍**
+            - 1월~12월 자동 감지
+            - 데이터 추가 시 자동 반영
             """)
+        
+        st.info("""
+        💡 **사용 방법**
+        1. 엑셀 파일에 원하는 만큼 월 데이터 추가 (1월, 2월, ..., 12월)
+        2. 파일 업로드하면 자동으로 인식
+        3. 예측 조건 설정 후 실행!
+        """)
 
 if __name__ == "__main__":
     main()
-
 
 
 
