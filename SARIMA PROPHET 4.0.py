@@ -565,7 +565,7 @@ def main():
             with col1:
                 st.metric("원료 수", f"{len(model.df_usage):,}")
             with col2:
-                st.metric("데이터 기간", "1-8월")
+                st.metric("데이터 기간", "2년")
             with col3:
                 st.metric("생산 계획", f"{production:.0f}톤")
             with col4:
@@ -702,3 +702,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
