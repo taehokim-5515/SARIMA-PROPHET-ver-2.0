@@ -1,8 +1,6 @@
 """
-Prophet + BOM 하이브리드 모델 v8.0 - Streamlit 앱
-Google Sheets 서비스 계정 연동
-실제 패턴(Prophet 65%) 중심, BOM 참고용(15%)
-안전장치로 BOM 과대예측 방지
+Prophet + BOM 하이브리드 모델 v8.0 - Streamlit 앱 (최종 수정본)
+Google Sheets 서비스 계정 연동 + 두 번째 코드 연산 로직
 실행: streamlit run app.py
 """
 
@@ -81,7 +79,7 @@ def get_gspread_client():
         return None
 
 def read_google_sheet(sheet_id, sheet_name, use_header=True):
-    """Google Sheets에서 데이터 읽기"""
+    """Google Sheets에서 데이터 읽기 (타입 변환 개선)"""
     try:
         client = get_gspread_client()
         if client is None:
@@ -91,16 +89,33 @@ def read_google_sheet(sheet_id, sheet_name, use_header=True):
         worksheet = spreadsheet.worksheet(sheet_name)
         data = worksheet.get_all_values()
         
-        if len(data) > 0:
-            if use_header and len(data) > 1:
-                # 첫 행을 헤더로 사용
-                df = pd.DataFrame(data[1:], columns=data[0])
-            else:
-                # 헤더 없이 모든 데이터 가져오기 (BOM용)
-                df = pd.DataFrame(data)
-            return df
-        else:
+        if len(data) == 0:
             return None
+        
+        if use_header and len(data) > 1:
+            # 첫 행을 헤더로 사용
+            df = pd.DataFrame(data[1:], columns=data[0])
+            
+            # 🔥 핵심 수정: 숫자형 컬럼 자동 변환
+            for col in df.columns:
+                # 원료코드, 품목코드 등은 정수형으로
+                if '코드' in col:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
+                # 월별 데이터는 실수형으로
+                elif '월' in col or col in ['1월', '2월', '3월', '4월', '5월', '6월', 
+                                           '7월', '8월', '9월', '10월', '11월', '12월']:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                # 기타 숫자 가능성 있는 컬럼
+                else:
+                    # 숫자로 변환 시도
+                    temp = pd.to_numeric(df[col], errors='coerce')
+                    if temp.notna().sum() > len(df) * 0.5:  # 50% 이상 숫자면 숫자 컬럼으로
+                        df[col] = temp.fillna(0)
+        else:
+            # 헤더 없이 모든 데이터 가져오기 (BOM용)
+            df = pd.DataFrame(data)
+        
+        return df
     
     except Exception as e:
         st.error(f"❌ '{sheet_name}' 시트 로드 실패: {str(e)}")
@@ -111,10 +126,14 @@ class BOMHybridModel:
     
     def __init__(self):
         """모델 초기화"""
+        # 두 번째 코드의 가중치 사용
         self.hybrid_weights = {
-            '대량': {'bom': 0.15, 'prophet': 0.65, 'trend': 0.15, 'ma': 0.05, 'confidence_level': 0.90, 'base_margin': 0.06},
-            '중간': {'bom': 0.15, 'prophet': 0.60, 'trend': 0.15, 'ma': 0.10, 'confidence_level': 0.85, 'base_margin': 0.10},
-            '소량': {'bom': 0.10, 'prophet': 0.60, 'trend': 0.20, 'ma': 0.10, 'confidence_level': 0.80, 'base_margin': 0.18}
+            '대량': {'bom': 0.15, 'prophet': 0.65, 'trend': 0.15, 'ma': 0.05, 
+                    'confidence_level': 0.90, 'base_margin': 0.06},
+            '중간': {'bom': 0.15, 'prophet': 0.60, 'trend': 0.15, 'ma': 0.10,
+                    'confidence_level': 0.85, 'base_margin': 0.10},
+            '소량': {'bom': 0.10, 'prophet': 0.60, 'trend': 0.20, 'ma': 0.10,
+                    'confidence_level': 0.80, 'base_margin': 0.18}
         }
         
         self.material_corrections = {
@@ -136,42 +155,33 @@ class BOMHybridModel:
             return '기타'
     
     def load_bom_data_from_sheets(self, sheet_id):
-        """BOM 데이터 로드"""
+        """BOM 데이터 로드 (두 번째 코드 로직)"""
         try:
             with st.spinner("📦 BOM 데이터 로딩 중..."):
-                # 헤더 없이 로드 (BOM 시트는 제품명이 첫 행)
                 df_raw = read_google_sheet(sheet_id, '제품 BOM', use_header=False)
                 if df_raw is None:
                     self.bom_available = False
                     return False
                 
-                # 디버깅: 데이터 구조 확인 (컬럼명 문제 해결)
-                st.write("🔍 BOM 데이터 미리보기 (처음 10행):")
-                df_preview = df_raw.head(10).copy()
-                df_preview.columns = [f'컬럼{i}' for i in range(len(df_preview.columns))]
-                st.dataframe(df_preview)
-                
                 current_product = None
+                
                 for idx, row in df_raw.iterrows():
-                    # 첫 번째 컬럼 값 확인
                     first_col = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ''
                     second_col = str(row.iloc[1]).strip() if len(row) > 1 and pd.notna(row.iloc[1]) else ''
                     third_col = str(row.iloc[2]).strip() if len(row) > 2 and pd.notna(row.iloc[2]) else ''
                     
-                    # 제품명 행 (첫 번째 컬럼만 값이 있고, 두 번째가 비어있음)
+                    # 제품명 행
                     if first_col and not second_col:
                         current_product = first_col
                         self.bom_data[current_product] = []
-                        st.write(f"✅ 제품 발견: {current_product}")
                     
                     # 헤더 행 스킵
                     elif first_col.lower() in ['erp 코드', 'erp코드', '원료코드', '품목코드']:
                         continue
                     
-                    # 원료 행 (3개 컬럼 모두 값이 있음)
+                    # 원료 행
                     elif first_col and second_col and third_col and current_product:
                         try:
-                            # 원료코드가 숫자인지 확인
                             material_code = int(float(first_col))
                             material_name = second_col
                             ratio = float(third_col)
@@ -182,7 +192,6 @@ class BOMHybridModel:
                                 '배합률': ratio
                             })
                         except (ValueError, TypeError):
-                            # 숫자 변환 실패 시 스킵
                             continue
                 
                 # 자동 브랜드 매핑
@@ -206,13 +215,11 @@ class BOMHybridModel:
                     """)
                     return True
                 else:
-                    st.warning(f"⚠️ BOM 데이터가 비어있습니다. 파싱된 제품 수: {len(self.bom_data)}")
+                    st.warning("⚠️ BOM 데이터가 비어있습니다.")
                     return False
                     
         except Exception as e:
             st.error(f"⚠️ BOM 데이터 로드 실패: {str(e)}")
-            import traceback
-            st.code(traceback.format_exc())
             self.bom_available = False
             return False
     
@@ -284,7 +291,7 @@ class BOMHybridModel:
         return available_months
     
     def prepare_time_series(self):
-        """시계열 데이터 준비"""
+        """시계열 데이터 준비 (두 번째 코드 로직)"""
         self.available_months = self.detect_month_columns(self.df_usage)
         num_months = len(self.available_months)
         
@@ -322,7 +329,6 @@ class BOMHybridModel:
             production_values.append(default_prod[len(production_values)])
         
         production_values = production_values[:num_months]
-        
         self.production_ts = pd.DataFrame({'ds': self.months, 'y': production_values})
         
         # 브랜드 비중
@@ -428,7 +434,7 @@ class BOMHybridModel:
             return None
     
     def predict_material(self, material_code, material_name, usage_values, next_month_production, brand_ratios):
-        """개별 원료 예측"""
+        """개별 원료 예측 (두 번째 코드 로직)"""
         try:
             if sum(usage_values) == 0:
                 return 0, (0, 0), 'N/A'
@@ -671,14 +677,11 @@ def main():
                 각 스프레드시트에 서비스 계정 추가:
                 1. Google Sheets 파일 열기
                 2. "공유" 클릭
-                3. 이메일 추가: `claude@sound-vehicle-475004-b5.iam.gserviceaccount.com`
+                3. 이메일 추가: 서비스 계정 이메일
                 4. 권한: "뷰어"
                 5. "전송" 클릭
                 
-                ✅ 3개 파일 모두 적용:
-                - 사용량 및 구매량 예측모델
-                - 월별 기초재고 및 기말재고
-                - BOM 신뢰성 추가
+                ✅ 3개 파일 모두 적용 필요
                 """)
             return
         
@@ -714,9 +717,9 @@ def main():
         st.markdown("**브랜드 비중 (%)**")
         col1, col2 = st.columns(2)
         with col1:
-            bob = st.slider("밥이보약", 0, 100, 60, 1)
+            bob = st.slider("밥이보약", 0, 100, 60, 5)
         with col2:
-            real = st.slider("더리얼", 0, 100, 35, 1)
+            real = st.slider("더리얼", 0, 100, 35, 5)
         
         etc = 100 - bob - real
         if etc < 0:
@@ -879,11 +882,7 @@ def main():
             - 좌측 사이드바에서 업로드
             
             **2. Google Sheets 권한 설정**
-            각 스프레드시트 "공유"에서:
-            ```
-            claude@sound-vehicle-475004-b5.iam.gserviceaccount.com
-            ```
-            를 "뷰어" 권한으로 추가
+            각 스프레드시트 "공유"에서 서비스 계정 이메일을 "뷰어" 권한으로 추가
             
             **3. 대상 파일 (3개)**
             - ✅ 사용량 및 구매량 예측모델
@@ -918,4 +917,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
