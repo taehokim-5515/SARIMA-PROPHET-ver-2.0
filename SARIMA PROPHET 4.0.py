@@ -117,7 +117,7 @@ class StreamlitProphetTrendModel:
             st.error(f"❌ 데이터 로드 실패: {str(e)}")
             return False
     
-     def detect_month_columns(self, df):
+    def detect_month_columns(self, df):
         """엑셀에서 월 컬럼 자동 감지"""
         month_names = ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월']
         available_months = [m for m in month_names if m in df.columns]
@@ -722,5 +722,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
