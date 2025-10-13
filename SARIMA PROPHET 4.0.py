@@ -123,7 +123,7 @@ class StreamlitProphetTrendModel:
         available_months = [m for m in month_names if m in df.columns]
         return available_months
     
-     def prepare_time_series(self):
+    def prepare_time_series(self):
         """시계열 데이터 준비"""
         # 사용 가능한 월 자동 감지
         self.available_months = self.detect_month_columns(self.df_usage)
@@ -722,6 +722,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
