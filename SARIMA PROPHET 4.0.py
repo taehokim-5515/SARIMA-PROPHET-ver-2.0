@@ -90,11 +90,12 @@ SPREADSHEET_URLS = {
 }
 
 class GoogleSheetsConnector:
-    """Google Sheets 연결 관리자"""
+    """Google Sheets 연결 관리자 (캐싱 추가)"""
     
     def __init__(self):
         self.client = None
         self.connected = False
+        self._cache = {}  # 캐시 저장소
     
     def connect(self, credentials_json):
         """Google Sheets API 연결"""
@@ -128,14 +129,25 @@ class GoogleSheetsConnector:
             self.connected = False
             return False
     
-    def read_sheet(self, spreadsheet_id, sheet_name):
-        """스프레드시트에서 데이터 읽기 (개선 버전)"""
+    @st.cache_data(ttl=300)  # 5분간 캐시 유지
+    def read_sheet(_self, spreadsheet_id, sheet_name):
+        """스프레드시트에서 데이터 읽기 (캐싱 버전)"""
         try:
-            if not self.connected:
+            # 캐시 키 생성
+            cache_key = f"{spreadsheet_id}_{sheet_name}"
+            
+            # 캐시에 있으면 반환
+            if cache_key in _self._cache:
+                st.info(f"💾 캐시에서 '{sheet_name}' 시트 로드 (API 호출 없음)")
+                return _self._cache[cache_key].copy()
+            
+            if not _self.connected:
                 raise Exception("Google Sheets에 연결되지 않았습니다.")
             
+            st.info(f"☁️ '{sheet_name}' 시트 읽는 중... (API 호출)")
+            
             # 스프레드시트 열기
-            spreadsheet = self.client.open_by_key(spreadsheet_id)
+            spreadsheet = _self.client.open_by_key(spreadsheet_id)
             
             # 워크시트 선택
             worksheet = spreadsheet.worksheet(sheet_name)
@@ -167,11 +179,19 @@ class GoogleSheetsConnector:
                 
                 df.columns = new_columns
             
+            # 캐시에 저장
+            _self._cache[cache_key] = df.copy()
+            
             return df
             
         except Exception as e:
             st.error(f"❌ 시트 '{sheet_name}' 읽기 실패: {str(e)}")
             return None
+    
+    def clear_cache(self):
+        """캐시 초기화"""
+        self._cache = {}
+        st.success("✅ 캐시가 초기화되었습니다!")
     
     def read_sheet_with_header(self, spreadsheet_id, sheet_name, header_row=0):
         """헤더 위치를 지정하여 스프레드시트 읽기"""
@@ -976,6 +996,11 @@ def main():
                     return
             else:
                 st.success("✅ Google Sheets 연결됨")
+            
+            # 캐시 초기화 버튼
+            if st.button("🔄 캐시 초기화", help="데이터를 새로 불러오려면 클릭"):
+                sheets.clear_cache()
+                st.cache_data.clear()
         else:
             st.info("💡 JSON 키 파일을 업로드하세요")
             
@@ -991,6 +1016,24 @@ def main():
                 8. 다운로드된 JSON 파일을 여기에 업로드
                 
                 **중요:** 서비스 계정 이메일에 스프레드시트 편집 권한 부여!
+                """)
+            
+            # API 할당량 정보
+            with st.expander("⚠️ API 할당량 정보"):
+                st.markdown("""
+                **Google Sheets API 제한:**
+                - 📊 분당 읽기 요청: 60-100개
+                - ⏰ 할당량 리셋: 매 분마다
+                
+                **429 에러 발생 시:**
+                1. ⏰ 1-2분 기다리기
+                2. 🔄 캐시 초기화 버튼 사용하지 말기
+                3. 💾 캐시 활용으로 API 호출 최소화
+                
+                **캐싱 기능:**
+                - ✅ 한 번 읽은 데이터는 5분간 캐시
+                - ✅ 새로고침해도 API 호출 안 함
+                - ✅ "💾 캐시에서 로드" 메시지 확인
                 """)
             return
         
@@ -1238,6 +1281,18 @@ def main():
         # 초기 화면
         st.info("👈 좌측 사이드바에서 Google Sheets 인증을 진행하세요")
         
+        # 중요 공지
+        st.warning("""
+        ⚠️ **API 할당량 안내**
+        
+        Google Sheets API는 **분당 60-100개 읽기 요청 제한**이 있어요.
+        
+        **429 에러 발생 시:**
+        - ⏰ 1-2분만 기다렸다가 다시 실행하세요
+        - 💾 캐싱 기능이 자동으로 API 호출을 최소화합니다
+        - 🔄 불필요한 캐시 초기화는 피해주세요
+        """)
+        
         with st.expander("🚀 Google Sheets 연동 버전", expanded=True):
             st.markdown("""
             ### ☁️ 클라우드 기반 예측 시스템
@@ -1248,6 +1303,7 @@ def main():
             - 📱 언제 어디서나 접근 가능
             - 🔄 자동 버전 관리 및 백업
             - 💾 파일 업로드 불필요
+            - 💾 **캐싱으로 빠른 재실행**
             
             **사용 방법**
             1. Google Cloud Console에서 서비스 계정 생성
@@ -1267,6 +1323,7 @@ def main():
             - 📊 Prophet 65% 강화
             - 🤖 자동 브랜드 인식
             - 🎯 3가지 예측 방식
+            - 💾 **스마트 캐싱 (API 할당량 절약)**
             """)
         
         st.success("""
@@ -1275,6 +1332,11 @@ def main():
         2. Google Sheets 연결 확인
         3. 생산 계획 및 브랜드 비중 입력
         4. 🔮 예측 실행 버튼 클릭!
+        
+        **💾 캐싱 기능**
+        - 한 번 읽은 데이터는 5분간 자동 저장
+        - 새로고침해도 다시 읽지 않음
+        - API 할당량 걱정 없이 사용!
         """)
 
 if __name__ == "__main__":
