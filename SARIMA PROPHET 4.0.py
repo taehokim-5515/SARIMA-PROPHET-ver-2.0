@@ -77,17 +77,55 @@ def read_google_sheet(sheet_id, sheet_name):
         spreadsheet = client.open_by_key(sheet_id)
         worksheet = spreadsheet.worksheet(sheet_name)
         
-        # 🔥 핵심: CSV 형식으로 export (자동 타입 변환)
-        # gspread로 인증하되, 데이터는 CSV로 가져와서 pandas가 타입을 자동 처리
-        data = worksheet.get_all_records()  # 딕셔너리 리스트로 가져오기
+        # get_all_values()로 모든 데이터 가져오기
+        data = worksheet.get_all_values()
         
         if len(data) == 0:
             return None
         
-        df = pd.DataFrame(data)
+        if len(data) < 2:
+            return None
         
-        # 빈 컬럼 제거
-        df = df.loc[:, (df != '').any(axis=0)]
+        # 첫 행을 헤더로, 나머지를 데이터로
+        headers = data[0]
+        rows = data[1:]
+        
+        # 🔥 중복 빈 컬럼명 처리
+        seen = {}
+        unique_headers = []
+        for i, h in enumerate(headers):
+            if h == '' or not h:
+                # 빈 컬럼명은 'Unnamed_X'로 변경
+                new_name = f'Unnamed_{i}'
+                unique_headers.append(new_name)
+            elif h in seen:
+                # 중복된 컬럼명도 번호 추가
+                seen[h] += 1
+                unique_headers.append(f'{h}_{seen[h]}')
+            else:
+                seen[h] = 0
+                unique_headers.append(h)
+        
+        # DataFrame 생성
+        df = pd.DataFrame(rows, columns=unique_headers)
+        
+        # 🔥 자동 타입 변환
+        for col in df.columns:
+            # 'Unnamed_' 컬럼은 스킵
+            if col.startswith('Unnamed_'):
+                continue
+            
+            # 숫자로 변환 시도
+            try:
+                converted = pd.to_numeric(df[col], errors='coerce')
+                # 50% 이상이 숫자면 숫자 컬럼으로 처리
+                if converted.notna().sum() > len(df) * 0.5:
+                    df[col] = converted.fillna(0)
+            except:
+                pass
+        
+        # 'Unnamed_' 컬럼 제거
+        df = df.loc[:, ~df.columns.str.startswith('Unnamed_')]
         
         return df
     
@@ -738,9 +776,9 @@ def main():
         st.markdown("**브랜드 비중 (%)**")
         col1, col2 = st.columns(2)
         with col1:
-            bob = st.slider("밥이보약", 0, 100, 60, 5)
+            bob = st.slider("밥이보약", 0, 100, 60, 1)
         with col2:
-            real = st.slider("더리얼", 0, 100, 35, 5)
+            real = st.slider("더리얼", 0, 100, 35, 1)
         
         etc = 100 - bob - real
         if etc < 0:
