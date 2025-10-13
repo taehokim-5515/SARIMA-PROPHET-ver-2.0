@@ -118,9 +118,24 @@ class StreamlitProphetTrendModel:
             return False
     
     def detect_month_columns(self, df):
-        """엑셀에서 월 컬럼 자동 감지"""
+        """엑셀에서 실제 데이터가 있는 월 컬럼만 감지"""
         month_names = ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월']
-        available_months = [m for m in month_names if m in df.columns]
+        available_months = []
+        
+        for month in month_names:
+            if month in df.columns:
+                # 해당 월에 실제 데이터가 있는지 확인 (0이 아닌 값이 있는지)
+                col_data = df[month]
+                # NaN 제거하고 숫자로 변환 가능한 값만 확인
+                valid_data = pd.to_numeric(col_data, errors='coerce').dropna()
+                
+                # 0이 아닌 값이 하나라도 있으면 유효한 월로 판단
+                if len(valid_data) > 0 and valid_data.sum() > 0:
+                    available_months.append(month)
+                else:
+                    # 데이터가 없으면 여기서 중단 (연속된 월만 인정)
+                    break
+        
         return available_months
     
     def prepare_time_series(self):
@@ -622,7 +637,7 @@ def main():
             with col2:
                 st.metric("데이터 기간", f"1-{model.num_months}월")
             with col3:
-                st.metric("예측 대상", f"{model.num_months + 1}월")
+                st.metric("생산 계획", f"{production:.0f}톤")
             with col4:
                 avg_prod = np.mean(model.production_ts['y'].values)
                 st.metric("평균 생산", f"{avg_prod:.0f}톤")
