@@ -1,34 +1,4 @@
-def calculate_bom_requirement(self, material_code, production_ton, brand_ratios):
-        """BOM 기반 원료 필요량 계산"""
-        if not self.bom_available:
-            return None
-        
-        total_requirement = 0.0
-        found_in_products = []  # 매칭된 제품 추적
-        
-        # 브랜드별 생산량 계산
-        for brand, ratio in brand_ratios.items():
-            brand_production = production_ton * ratio  # 톤
-            
-            # 해당 브랜드의 대표 제품들
-            products = self.brand_products.get(brand, [])
-            
-            if not products:
-                continue
-            
-            # 각 제품에서 해당 원료의 평균 배합률 계산
-            material_ratios = []
-            
-            for product in products:
-                if product in self.bom_data:
-                    bom = self.bom_data[product]
-                    for item in bom:
-                        if item['원료코드'] == material_code:  # 원료코드로 매칭
-                            material_ratios.append(item['배합률'])
-                            found_in_products.append(product)
-                            break
-            
-            # 평균 배합률"""
+"""
 Prophet + BOM 하이브리드 모델 v7.1 - Streamlit 앱
 실제 패턴(Prophet 65%) 중심, BOM 참고용(15%)
 안전장치로 BOM 과대예측 방지
@@ -998,3 +968,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
