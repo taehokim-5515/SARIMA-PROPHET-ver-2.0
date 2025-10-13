@@ -117,15 +117,31 @@ class StreamlitProphetTrendModel:
             st.error(f"❌ 데이터 로드 실패: {str(e)}")
             return False
     
-    def prepare_time_series(self):
+     def detect_month_columns(self, df):
+        """엑셀에서 월 컬럼 자동 감지"""
+        month_names = ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월']
+        available_months = [m for m in month_names if m in df.columns]
+        return available_months
+    
+     def prepare_time_series(self):
         """시계열 데이터 준비"""
-        self.months = pd.date_range(start='2025-01-01', periods=8, freq='MS')
+        # 사용 가능한 월 자동 감지
+        self.available_months = self.detect_month_columns(self.df_usage)
+        num_months = len(self.available_months)
+        
+        if num_months == 0:
+            st.error("❌ 월 데이터를 찾을 수 없습니다. (1월, 2월, ... 형식 필요)")
+            return
+        
+        # 동적으로 날짜 범위 생성
+        self.months = pd.date_range(start='2025-01-01', periods=num_months, freq='MS')
+        self.num_months = num_months
         
         # 생산량 데이터
         production_values = []
         production_row = self.df_production.iloc[0] if len(self.df_production) > 0 else self.df_production
         
-        for col in ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월']:
+        for col in self.available_months:
             if col in self.df_production.columns:
                 try:
                     val = production_row[col]
@@ -137,11 +153,13 @@ class StreamlitProphetTrendModel:
                     production_values.append(0)
         
         if not production_values:
-            production_values = [345, 430, 554, 570, 522, 556, 606, 539]
+            # 기본값도 동적으로
+            default_values = [345, 430, 554, 570, 522, 556, 606, 539, 580, 600, 620, 550]
+            production_values = default_values[:num_months]
         
         self.production_ts = pd.DataFrame({
             'ds': self.months,
-            'y': production_values[:8]
+            'y': production_values[:num_months]
         })
         
         # 브랜드 비중
@@ -151,14 +169,16 @@ class StreamlitProphetTrendModel:
                 brand_row = self.df_brand[self.df_brand.iloc[:, 0] == brand]
                 if not brand_row.empty:
                     ratios = []
-                    for col in ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월']:
+                    for col in self.available_months:
                         if col in self.df_brand.columns:
                             ratios.append(float(brand_row[col].values[0]))
                     self.brand_ratios[brand] = ratios
                 else:
-                    self.brand_ratios[brand] = [0.65, 0.33, 0.02][['밥이보약', '더리얼', '기타'].index(brand)] * 8
+                    default_ratio = [0.65, 0.33, 0.02][['밥이보약', '더리얼', '기타'].index(brand)]
+                    self.brand_ratios[brand] = [default_ratio] * num_months
             except:
-                self.brand_ratios[brand] = [0.65, 0.33, 0.02][['밥이보약', '더리얼', '기타'].index(brand)] * 8
+                default_ratio = [0.65, 0.33, 0.02][['밥이보약', '더리얼', '기타'].index(brand)]
+                self.brand_ratios[brand] = [default_ratio] * num_months
     
     def safe_float(self, val):
         """안전한 float 변환"""
@@ -702,4 +722,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
