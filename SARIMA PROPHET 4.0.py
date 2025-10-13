@@ -99,8 +99,16 @@ def read_google_sheet(sheet_id, sheet_name, use_header=True):
             # 🔥 안전한 타입 변환 (에러 방지)
             for col in df.columns:
                 try:
-                    # 빈 컬럼이거나 모든 값이 비어있으면 스킵
-                    if df[col].empty or df[col].isna().all() or (df[col] == '').all():
+                    # 컬럼명이 비어있거나 공백이면 스킵
+                    if not col or str(col).strip() == '':
+                        continue
+                    
+                    # 컬럼의 모든 값이 비어있으면 스킵
+                    if df[col].isna().all():
+                        continue
+                    
+                    # 모든 값이 빈 문자열이면 스킵
+                    if (df[col].astype(str).str.strip() == '').all():
                         continue
                     
                     # 원료코드, 품목코드 등은 정수형으로
@@ -120,9 +128,8 @@ def read_google_sheet(sheet_id, sheet_name, use_header=True):
                             df[col] = temp.fillna(0)
                 
                 except Exception as col_error:
-                    # 개별 컬럼 변환 실패 시 경고만 출력하고 계속 진행
-                    st.warning(f"⚠️ '{sheet_name}' 시트의 '{col}' 컬럼 변환 실패: {str(col_error)}")
-                    continue
+                    # 개별 컬럼 변환 실패 시는 조용히 무시 (너무 많은 경고 방지)
+                    pass
         else:
             # 헤더 없이 모든 데이터 가져오기 (BOM용)
             df = pd.DataFrame(data)
