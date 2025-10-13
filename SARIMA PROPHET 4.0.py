@@ -323,8 +323,11 @@ class StreamlitProphetTrendModel:
                 prophet_model = self.train_prophet_simple(train_data, material_type)
                 
                 if prophet_model:
+                    # 다음 달 동적 계산 (마지막 데이터 다음 달)
+                    next_month_date = self.months[len(cleaned) - 1] + pd.DateOffset(months=1)
+                    
                     future = pd.DataFrame({
-                        'ds': [pd.Timestamp('2025-09-01')],
+                        'ds': [next_month_date],
                         'production': [next_month_production]
                     })
                     
@@ -619,7 +622,7 @@ def main():
             with col2:
                 st.metric("데이터 기간", f"1-{model.num_months}월")
             with col3:
-                st.metric("생산 계획", f"{production:.0f}톤")
+                st.metric("예측 대상", f"{model.num_months + 1}월")
             with col4:
                 avg_prod = np.mean(model.production_ts['y'].values)
                 st.metric("평균 생산", f"{avg_prod:.0f}톤")
@@ -766,5 +769,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
