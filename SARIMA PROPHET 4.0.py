@@ -30,7 +30,7 @@ warnings.filterwarnings('ignore')
 
 # 페이지 설정
 st.set_page_config(
-    page_title="원료 예측 시스템 v7.1 (Google Sheets)",
+    page_title="원료 사용량 예측 시나리오 v7.1 (Google Sheets)",
     page_icon="🎯",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -1341,5 +1341,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
