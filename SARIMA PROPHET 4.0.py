@@ -954,7 +954,7 @@ def main():
     # 헤더
     col1, col2 = st.columns([3, 1])
     with col1:
-        st.title("🎯 원료 예측 시스템 v7.1")
+        st.title("🎯 원료 사용량 예측 시나리오 v7.1")
         st.markdown("**Google Sheets 연동 버전** (Prophet 65% + BOM 15%)")
     with col2:
         st.markdown("""
@@ -1341,6 +1341,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
