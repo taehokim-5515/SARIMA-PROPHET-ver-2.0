@@ -1050,7 +1050,7 @@ def main():
         production = st.number_input(
             "생산 계획 (톤)",
             min_value=100.0,
-            max_value=1000.0,
+            max_value=10000.0,
             value=600.0,
             step=10.0
         )
@@ -1341,3 +1341,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
